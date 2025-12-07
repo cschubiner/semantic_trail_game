@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Semantle-like word guessing game using ensemble embeddings.
+Semantic Trail word guessing game using ensemble embeddings.
 Uses top 2 embedding models averaged together for similarity scoring.
 """
 
@@ -207,7 +207,7 @@ def render_screen(guesses: list, answer: str, message: str = "", won: bool = Fal
 
     # Header
     print(f"{BOLD}{'═' * 60}{RESET}")
-    print(f"{BOLD}  SEMANTLE{RESET} - Find the secret word!")
+    print(f"{BOLD}  SEMANTIC TRAIL{RESET} - Find the secret word!")
     print(f"{DIM}  Ensemble: {' + '.join(m.split('/')[-1] for m in ENSEMBLE_MODELS)}{RESET}")
     print(f"{BOLD}{'═' * 60}{RESET}")
     print()

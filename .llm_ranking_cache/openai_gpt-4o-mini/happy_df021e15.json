@@ -1,0 +1,28 @@
+{
+  "target_word": "happy",
+  "words": [
+    "joyful",
+    "cheerful",
+    "glad",
+    "pleased",
+    "content",
+    "excited",
+    "smile",
+    "celebrate",
+    "sad",
+    "concrete"
+  ],
+  "ranking": [
+    "joyful",
+    "cheerful",
+    "glad",
+    "content",
+    "pleased",
+    "excited",
+    "smile",
+    "celebrate",
+    "sad",
+    "concrete"
+  ],
+  "model": "openai/gpt-4o-mini"
+}

@@ -1,0 +1,28 @@
+{
+  "target_word": "book",
+  "words": [
+    "novel",
+    "text",
+    "volume",
+    "read",
+    "page",
+    "author",
+    "library",
+    "story",
+    "magazine",
+    "hammer"
+  ],
+  "ranking": [
+    "volume",
+    "novel",
+    "text",
+    "story",
+    "read",
+    "page",
+    "author",
+    "library",
+    "magazine",
+    "hammer"
+  ],
+  "model": "openai/gpt-4o-mini"
+}

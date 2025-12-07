@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Compare word embeddings and LLM rankings across multiple OpenRouter models.
-Useful for building Semantle-like word guessing games.
+Useful for building Semantic Trail–style word guessing games.
 
 Now includes:
 - Embedding models (cosine similarity)
@@ -39,8 +39,12 @@ EMBEDDING_MODELS = [
 # LLM models for ranking via structured outputs
 # These models are asked to rank words by semantic similarity
 LLM_RANKING_MODELS = [
-    ("openai/gpt-4o-mini", 0.15),       # $0.15/M input, supports structured outputs
+    ("openai/gpt-4o-mini", 0.15),           # $0.15/M input, supports structured outputs
     ("google/gemini-2.0-flash-001", 0.10),  # $0.10/M input, fast
+    ("deepseek/deepseek-v3.2", 0.14),       # DeepSeek V3.2
+    ("openai/gpt-oss-120b", 0.50),          # GPT OSS 120B
+    ("openai/gpt-oss-20b", 0.10),           # GPT OSS 20B
+    ("google/gemini-3-pro-preview", 1.25),  # Gemini 3 Pro Preview
 ]
 
 
@@ -629,7 +633,7 @@ def compare_word_similarities(
 
     Args:
         words: List of words to compare
-        target_word: The word to compare against (like the secret word in Semantle)
+        target_word: The word to compare against (like the secret word in Semantic Trail)
         model: OpenRouter model ID
         api_key: OpenRouter API key
 

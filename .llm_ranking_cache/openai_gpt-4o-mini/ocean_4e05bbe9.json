@@ -1,0 +1,42 @@
+{
+  "target_word": "ocean",
+  "words": [
+    "airpods",
+    "chocolate",
+    "cold",
+    "cruise",
+    "embark",
+    "freezing",
+    "hot",
+    "kindle",
+    "mouse",
+    "rinse",
+    "sail",
+    "sale",
+    "score",
+    "sounds",
+    "spider",
+    "tepid",
+    "warm"
+  ],
+  "ranking": [
+    "cruise",
+    "sail",
+    "sounds",
+    "cold",
+    "tepid",
+    "warm",
+    "hot",
+    "freezing",
+    "airpods",
+    "mouse",
+    "spider",
+    "kindle",
+    "score",
+    "sale",
+    "chocolate",
+    "rinse",
+    "embark"
+  ],
+  "model": "openai/gpt-4o-mini"
+}

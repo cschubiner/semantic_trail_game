@@ -1,4 +1,4 @@
-name = "semantle-backend"
+name = "semantic-trail-backend"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
 
@@ -7,7 +7,7 @@ compatibility_date = "2025-01-01"
 # Replace the id below with the actual ID from the output
 [[kv_namespaces]]
 binding = "EMBED_CACHE"
-id = "YOUR_KV_NAMESPACE_ID_HERE"
+id = "c084c661e9564d2683f0189f0c7abd2a"
 
 # Environment variables (non-secret)
 [vars]

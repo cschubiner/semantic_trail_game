@@ -1,6 +1,6 @@
-# Semantle Clone - Embedding-Based Word Guessing Game
+# Semantic Trail - Embedding-Based Word Guessing Game
 
-A Semantle-style word guessing game powered by an ensemble of embedding models. Includes a comprehensive benchmark suite for evaluating embedding models against human-defined semantic similarity judgments.
+Semantic Trail is a word guessing game powered by an ensemble of embedding models. Includes a comprehensive benchmark suite for evaluating embedding models against human-defined semantic similarity judgments.
 
 **Two ways to play:**
 - **Web App** — Browser-based game with voice input support (Cloudflare Worker backend)
@@ -61,13 +61,13 @@ The project includes a web app version that anyone can play in a browser.
 
 ## How It Works
 
-### The Game (`semantle_game.py`)
+### The Game (`semantic_trail_game.py`)
 
 You try to guess a secret word. After each guess, you receive a similarity score (0-100) indicating how semantically close your guess is to the target word.
 
 ```
 ════════════════════════════════════════════════════════════
-  SEMANTLE - Find the secret word!
+  SEMANTIC TRAIL - Find the secret word!
   Ensemble: text-embedding-3-large + gte-large
 ════════════════════════════════════════════════════════════
 
@@ -213,7 +213,7 @@ wrangler deploy
 
 Wrangler will print your Worker URL, e.g.:
 ```
-https://semantle-backend.yourname.workers.dev
+https://semantic-trail-backend.yourname.workers.dev
 ```
 
 #### 5. Configure Frontend
@@ -221,7 +221,7 @@ https://semantle-backend.yourname.workers.dev
 Update `web/game.js` with your Worker URL:
 
 ```javascript
-const API_URL = 'https://semantle-backend.yourname.workers.dev/score';
+const API_URL = 'https://semantic-trail-backend.yourname.workers.dev/score';
 const DEMO_MODE = false;  // Set to false to use real backend
 ```
 
@@ -245,7 +245,7 @@ python3 -m http.server 8080
 ### Play the Game
 
 ```bash
-python semantle_game.py
+python semantic_trail_game.py
 ```
 
 **Commands:**
@@ -361,7 +361,7 @@ score = (similarity - 0.20) / (0.85 - 0.20) * 100
 ```
 word_guessing_game/
 ├── README.md                    # This file
-├── semantle_game.py             # CLI game (Python)
+├── semantic_trail_game.py       # CLI game (Python)
 ├── embedding_comparison.py      # Benchmark suite
 ├── google-10000-english-usa.txt # Word list (10k words)
 ├── .embedding_cache/            # Python CLI cache (auto-created)

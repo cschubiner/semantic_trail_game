@@ -1,0 +1,42 @@
+{
+  "target_word": "ocean",
+  "words": [
+    "airpods",
+    "chocolate",
+    "cold",
+    "cruise",
+    "embark",
+    "freezing",
+    "hot",
+    "kindle",
+    "mouse",
+    "rinse",
+    "sail",
+    "sale",
+    "score",
+    "sounds",
+    "spider",
+    "tepid",
+    "warm"
+  ],
+  "ranking": [
+    "cruise",
+    "sail",
+    "embark",
+    "cold",
+    "freezing",
+    "warm",
+    "tepid",
+    "sounds",
+    "hot",
+    "rinse",
+    "score",
+    "airpods",
+    "chocolate",
+    "kindle",
+    "sale",
+    "spider",
+    "mouse"
+  ],
+  "model": "google/gemini-2.0-flash-001"
+}

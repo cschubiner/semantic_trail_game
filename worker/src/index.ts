@@ -1,5 +1,5 @@
 /**
- * Semantle Backend - Cloudflare Worker
+ * Semantic Trail Backend - Cloudflare Worker
  *
  * Exposes POST /score endpoint for the word guessing game.
  * Uses ensemble embeddings with lazy KV caching.

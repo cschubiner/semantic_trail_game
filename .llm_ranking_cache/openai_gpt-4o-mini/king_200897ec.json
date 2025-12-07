@@ -1,0 +1,30 @@
+{
+  "target_word": "king",
+  "words": [
+    "queen",
+    "monarch",
+    "royal",
+    "throne",
+    "crown",
+    "kingdom",
+    "prince",
+    "castle",
+    "chess",
+    "peasant",
+    "refrigerator"
+  ],
+  "ranking": [
+    "monarch",
+    "queen",
+    "royal",
+    "throne",
+    "crown",
+    "kingdom",
+    "prince",
+    "castle",
+    "chess",
+    "peasant",
+    "refrigerator"
+  ],
+  "model": "openai/gpt-4o-mini"
+}

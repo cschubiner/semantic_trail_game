@@ -1,0 +1,28 @@
+{
+  "target_word": "doctor",
+  "words": [
+    "physician",
+    "surgeon",
+    "medical",
+    "medicine",
+    "nurse",
+    "hospital",
+    "patient",
+    "stethoscope",
+    "healthy",
+    "skateboard"
+  ],
+  "ranking": [
+    "physician",
+    "surgeon",
+    "nurse",
+    "medical",
+    "stethoscope",
+    "medicine",
+    "hospital",
+    "patient",
+    "healthy",
+    "skateboard"
+  ],
+  "model": "google/gemini-2.0-flash-001"
+}

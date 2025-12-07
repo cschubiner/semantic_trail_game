@@ -1,0 +1,28 @@
+{
+  "target_word": "doctor",
+  "words": [
+    "physician",
+    "surgeon",
+    "medical",
+    "medicine",
+    "nurse",
+    "hospital",
+    "patient",
+    "stethoscope",
+    "healthy",
+    "skateboard"
+  ],
+  "ranking": [
+    "physician",
+    "surgeon",
+    "nurse",
+    "medical",
+    "patient",
+    "hospital",
+    "medicine",
+    "stethoscope",
+    "healthy",
+    "skateboard"
+  ],
+  "model": "openai/gpt-4o-mini"
+}

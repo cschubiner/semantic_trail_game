@@ -1,0 +1,28 @@
+{
+  "target_word": "ocean",
+  "words": [
+    "sea",
+    "marine",
+    "waves",
+    "water",
+    "tide",
+    "beach",
+    "fish",
+    "ship",
+    "desert",
+    "calculator"
+  ],
+  "ranking": [
+    "sea",
+    "marine",
+    "waves",
+    "tide",
+    "beach",
+    "ship",
+    "water",
+    "fish",
+    "desert",
+    "calculator"
+  ],
+  "model": "google/gemini-2.0-flash-001"
+}

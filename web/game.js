@@ -1,5 +1,5 @@
 /**
- * Semantle Web Game - Frontend JavaScript
+ * Semantic Trail Web Game - Frontend JavaScript
  *
  * Handles:
  * - Submitting guesses to the Worker backend
@@ -9,10 +9,10 @@
 
 // Configuration
 // Change this URL to your deployed Cloudflare Worker URL
-const API_URL = 'http://localhost:8787/score';
+const API_URL = 'https://semantic-trail-backend.yourname.workers.dev/score';
 
 // For demo/testing without backend, set this to true
-const DEMO_MODE = true;
+const DEMO_MODE = false;
 
 // Game state
 let guesses = []; // Array of { word, similarity, score, bucket, isCorrect }

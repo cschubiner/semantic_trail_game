@@ -1,0 +1,28 @@
+{
+  "target_word": "fire",
+  "words": [
+    "flame",
+    "blaze",
+    "burn",
+    "heat",
+    "smoke",
+    "ember",
+    "ash",
+    "warm",
+    "water",
+    "pencil"
+  ],
+  "ranking": [
+    "flame",
+    "blaze",
+    "burn",
+    "heat",
+    "smoke",
+    "ember",
+    "ash",
+    "warm",
+    "water",
+    "pencil"
+  ],
+  "model": "google/gemini-2.0-flash-001"
+}

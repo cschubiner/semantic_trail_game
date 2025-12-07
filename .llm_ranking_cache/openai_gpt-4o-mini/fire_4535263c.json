@@ -1,0 +1,28 @@
+{
+  "target_word": "fire",
+  "words": [
+    "flame",
+    "blaze",
+    "burn",
+    "heat",
+    "smoke",
+    "ember",
+    "ash",
+    "warm",
+    "water",
+    "pencil"
+  ],
+  "ranking": [
+    "flame",
+    "blaze",
+    "burn",
+    "ember",
+    "smoke",
+    "heat",
+    "warm",
+    "ash",
+    "water",
+    "pencil"
+  ],
+  "model": "openai/gpt-4o-mini"
+}

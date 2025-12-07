@@ -1,0 +1,28 @@
+{
+  "target_word": "book",
+  "words": [
+    "novel",
+    "text",
+    "volume",
+    "read",
+    "page",
+    "author",
+    "library",
+    "story",
+    "magazine",
+    "hammer"
+  ],
+  "ranking": [
+    "novel",
+    "volume",
+    "text",
+    "story",
+    "page",
+    "author",
+    "library",
+    "read",
+    "magazine",
+    "hammer"
+  ],
+  "model": "google/gemini-2.0-flash-001"
+}

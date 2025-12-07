@@ -1,0 +1,28 @@
+{
+  "target_word": "ocean",
+  "words": [
+    "sea",
+    "marine",
+    "waves",
+    "water",
+    "tide",
+    "beach",
+    "fish",
+    "ship",
+    "desert",
+    "calculator"
+  ],
+  "ranking": [
+    "sea",
+    "waves",
+    "tide",
+    "water",
+    "marine",
+    "fish",
+    "beach",
+    "ship",
+    "desert",
+    "calculator"
+  ],
+  "model": "openai/gpt-4o-mini"
+}
