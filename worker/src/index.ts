@@ -17,7 +17,7 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/embeddings';
 const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 // LLM for re-ranking
-const RERANK_MODEL = 'google/gemini-2.5-flash-preview';
+const RERANK_MODEL = 'google/gemini-2.5-flash';
 
 // Cost protection: $1/hour budget
 const HOURLY_BUDGET_CENTS = 100; // $1.00 in cents
@@ -389,25 +389,16 @@ Be precise and consistent. Output valid JSON only, no explanation.`;
     jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
   }
 
-  try {
-    const rankings = JSON.parse(jsonStr) as Array<{ word: string; score: number }>;
+  const rankings = JSON.parse(jsonStr) as Array<{ word: string; score: number }>;
 
-    // Sort by score descending and assign ranks
-    rankings.sort((a, b) => b.score - a.score);
+  // Sort by score descending and assign ranks
+  rankings.sort((a, b) => b.score - a.score);
 
-    return rankings.map((r, idx) => ({
-      word: r.word.toLowerCase(),
-      rank: idx + 1,
-      llmScore: r.score,
-    }));
-  } catch (parseError) {
-    console.error('Failed to parse LLM response:', content);
-    // Fallback: return original order
-    return guesses.map((g, idx) => ({
-      word: g.word,
-      rank: idx + 1,
-    }));
-  }
+  return rankings.map((r, idx) => ({
+    word: r.word.toLowerCase(),
+    rank: idx + 1,
+    llmScore: r.score,
+  }));
 }
 
 /**
@@ -561,16 +552,13 @@ async function handleRerank(request: Request, env: Env): Promise<Response> {
     return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
   } catch (error) {
     console.error('Error in LLM rerank:', error);
-    // On error, return original order without failing
-    const response: RerankResponse = {
-      rankings: topGuesses.map((g, idx) => ({
-        word: g.word,
-        rank: idx + 1,
-      })),
-      rateLimited: false,
-      message: `LLM error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-    };
-    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+    // Return error - don't populate with fallback rankings
+    return jsonResponse(
+      { error: `LLM error: ${error instanceof Error ? error.message : 'Unknown error'}` },
+      500,
+      request,
+      env
+    );
   }
 }
 

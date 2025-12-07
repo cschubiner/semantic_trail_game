@@ -224,13 +224,13 @@ npx wrangler secret put OPENROUTER_API_KEY
 # ALLOWED_ORIGINS = "https://cschubiner.github.io"
 
 # Deploy worker
-npx wrangler deploy
+npx wrangler deploy          # or: npm run deploy
 
 # Tail logs (useful for debugging)
 npx wrangler tail
 
 # Local dev server
-npx wrangler dev
+npx wrangler dev             # or: npm run dev
 ```
 
 Wrangler will print your Worker URL, e.g.:
