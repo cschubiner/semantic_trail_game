@@ -18,8 +18,7 @@ const DEMO_MODE = false;
 // Game state
 let guesses = []; // Array of { word, similarity, score, bucket, isCorrect, llmRank?, llmScore? }
 let gameWon = false;
-let isProcessingGuess = false;
-let guessQueue = []; // Queue of words waiting to be submitted
+let guessQueue = []; // Queue of words currently being processed
 let currentGameIndex = 0; // 0 = word of the day, 1+ = random games
 
 // LocalStorage key (includes date so it resets daily)
@@ -475,7 +474,7 @@ async function performSmartRerank(batch, batchHash) {
 // ============================================================
 
 /**
- * Submit a guess to the backend (queues if already processing)
+ * Submit a guess to the backend (processes in parallel)
  */
 async function submitGuess(word = null) {
   const guess = (word || guessInput.value).trim().toLowerCase();
@@ -494,39 +493,21 @@ async function submitGuess(word = null) {
     return;
   }
 
-  // Check if already guessed or already in queue
+  // Check if already guessed or already processing
   if (guesses.some(g => g.word === guess) || guessQueue.includes(guess)) {
     showStatus(`Already guessed "${guess}"`, 'info');
     return;
   }
 
-  // If currently processing, add to queue
-  if (isProcessingGuess) {
-    guessQueue.push(guess);
-    showStatus(`Queued "${guess}" (${guessQueue.length} waiting)...`, 'info');
-    return;
-  }
-
-  // Process this guess
-  await processGuess(guess);
-
-  // Process any queued guesses
-  while (guessQueue.length > 0 && !gameWon) {
-    const nextGuess = guessQueue.shift();
-    // Skip if it was guessed while in queue
-    if (!guesses.some(g => g.word === nextGuess)) {
-      await processGuess(nextGuess);
-    }
-  }
+  // Add to queue and process (fire and forget - parallel processing)
+  guessQueue.push(guess);
+  processGuess(guess); // Don't await - let it run in parallel
 }
 
 /**
- * Process a single guess (internal - called by submitGuess)
+ * Process a single guess (runs in parallel with other guesses)
  */
 async function processGuess(guess) {
-  isProcessingGuess = true;
-  showStatus(`Thinking... "${guess}"`, 'info');
-
   // Start timer on first guess
   if (!timerStarted) {
     startTimer();
@@ -554,6 +535,12 @@ async function processGuess(guess) {
       result = await response.json();
     }
 
+    // Remove from queue
+    const queueIndex = guessQueue.indexOf(guess);
+    if (queueIndex > -1) {
+      guessQueue.splice(queueIndex, 1);
+    }
+
     // Add to guesses (compute bucket on frontend)
     guesses.push({
       word: result.guess,
@@ -576,9 +563,9 @@ async function processGuess(guess) {
     } else {
       // Show word, score, bucket, and rank in status
       const rank = getRank(result.score);
-      const bucketLabel = result.bucket || getBucket(result.score);
-      const queueInfo = guessQueue.length > 0 ? ` (${guessQueue.length} queued)` : '';
-      showStatus(`"${result.guess}" → ${result.score}/100 (${bucketLabel}) — Rank #${rank}/${guesses.length}${queueInfo}`, 'info');
+      const bucketLabel = getBucket(result.score);
+      const pendingInfo = guessQueue.length > 0 ? ` (${guessQueue.length} pending)` : '';
+      showStatus(`"${result.guess}" → ${result.score}/100 (${bucketLabel}) — Rank #${rank}/${guesses.length}${pendingInfo}`, 'info');
     }
 
     // Update UI
@@ -587,9 +574,12 @@ async function processGuess(guess) {
 
   } catch (error) {
     console.error('Error submitting guess:', error);
-    showStatus(`Error: ${error.message}`, 'error');
-  } finally {
-    isProcessingGuess = false;
+    // Remove from queue on error too
+    const queueIndex = guessQueue.indexOf(guess);
+    if (queueIndex > -1) {
+      guessQueue.splice(queueIndex, 1);
+    }
+    showStatus(`Error for "${guess}": ${error.message}`, 'error');
   }
 }
 
@@ -707,7 +697,6 @@ function resetGame() {
   guesses = [];
   gameWon = false;
   guessQueue = [];
-  isProcessingGuess = false;
   winBanner.classList.add('hidden');
   hintDisplay.classList.add('hidden');
   hintDisplay.textContent = '';
@@ -733,7 +722,6 @@ function newRandomGame() {
   guesses = [];
   gameWon = false;
   guessQueue = [];
-  isProcessingGuess = false;
   winBanner.classList.add('hidden');
   hintDisplay.classList.add('hidden');
   hintDisplay.textContent = '';
