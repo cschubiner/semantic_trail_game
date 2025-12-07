@@ -27,6 +27,7 @@ let lastGuessTime = null;
 const RERANK_INTERVAL_MS = 30000; // 30 seconds
 const INACTIVITY_TIMEOUT_MS = 60000; // Stop re-ranking after 60s of no guesses
 let previousTop20Hash = ''; // Track changes to top 20
+let rerankGroupId = 0; // Unique ID for each batch sent to LLM
 
 // Timer state
 let timerStarted = false;
@@ -199,34 +200,15 @@ function resetTimer() {
 }
 
 // ============================================================
-// LLM Re-ranking Functions
+// LLM Re-ranking Functions (Smart Anchor Algorithm)
 // ============================================================
-
-/**
- * Get top N guesses by embedding score (excluding correct answer)
- */
-function getTopNByEmbeddingScore(n) {
-  return [...guesses]
-    .filter(g => !g.isCorrect)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, n);
-}
-
-/**
- * Generate a hash of the top 20 for change detection
- */
-function getTop20Hash() {
-  const top20 = getTopNByEmbeddingScore(20);
-  return top20.map(g => g.word).join(',');
-}
 
 /**
  * Start the re-ranking interval
  */
 function startRerankInterval() {
   if (rerankInterval || DEMO_MODE) return;
-
-  console.log('Starting LLM re-rank interval');
+  console.log('Starting Smart LLM re-rank interval');
   rerankInterval = setInterval(checkAndRerank, RERANK_INTERVAL_MS);
 }
 
@@ -235,54 +217,131 @@ function startRerankInterval() {
  */
 function stopRerankInterval() {
   if (rerankInterval) {
-    console.log('Stopping LLM re-rank interval');
     clearInterval(rerankInterval);
     rerankInterval = null;
   }
 }
 
 /**
- * Check conditions and trigger re-rank if needed
+ * Reset re-ranking state
+ */
+function resetRerankState() {
+  stopRerankInterval();
+  lastGuessTime = null;
+  rerankGroupId = 0;
+  previousTop20Hash = '';
+  // Clear LLM metadata from guesses
+  for (const g of guesses) {
+    delete g.llmRank;
+    delete g.llmScore;
+    delete g.rerankGroupId;
+  }
+}
+
+/**
+ * Main Loop: Check if we need to re-rank
  */
 async function checkAndRerank() {
-  // Don't re-rank if game is won or not enough guesses
-  if (gameWon || guesses.length < 2) {
-    return;
-  }
+  if (gameWon || guesses.length < 3) return;
 
-  // Don't re-rank if user has been inactive too long
+  // Inactivity check
   if (lastGuessTime && Date.now() - lastGuessTime > INACTIVITY_TIMEOUT_MS) {
-    console.log('Stopping re-rank due to inactivity');
     stopRerankInterval();
     return;
   }
 
-  // Check if top 20 has changed
-  const currentHash = getTop20Hash();
-  if (currentHash === previousTop20Hash) {
-    console.log('Top 20 unchanged, skipping re-rank');
+  // Build the "Smart Batch" - skips stable blocks, explores new words
+  const batch = buildSmartBatch(20);
+
+  if (batch.length < 2) {
     return;
   }
 
-  console.log('Top 20 changed, triggering LLM re-rank');
-  await performRerank();
+  // Hash check to prevent spamming the exact same request
+  const batchHash = batch.map(g => g.word).join(',');
+  if (batchHash === previousTop20Hash) {
+    return;
+  }
+
+  console.log('Smart Rerank batch:', batch.map(b => `${b.word}(${b.rerankGroupId || 'new'})`).join(', '));
+  await performSmartRerank(batch, batchHash);
 }
 
 /**
- * Perform LLM re-ranking of top guesses
+ * ALGORITHM: Build a batch of words to send to LLM
+ *
+ * Logic: Iterate down the leaderboard. If we find a contiguous block of words
+ * that were previously sorted together (same rerankGroupId), keep only the
+ * HEAD and TAIL as anchors, skip the body. Use saved slots for lower words.
  */
-async function performRerank() {
-  const top20 = getTopNByEmbeddingScore(20);
+function buildSmartBatch(maxSize) {
+  // Get current leaderboard sorted by effective score
+  const sortedGuesses = [...guesses]
+    .filter(g => !g.isCorrect)
+    .sort((a, b) => {
+      const scoreA = a.llmScore ?? a.score;
+      const scoreB = b.llmScore ?? b.score;
+      return scoreB - scoreA;
+    });
 
-  if (top20.length < 2) {
-    return;
+  const batch = [];
+  let i = 0;
+
+  while (batch.length < maxSize && i < sortedGuesses.length) {
+    const current = sortedGuesses[i];
+
+    // If never ranked by LLM, always include it
+    if (!current.rerankGroupId) {
+      batch.push(current);
+      i++;
+      continue;
+    }
+
+    // Look ahead: find the extent of this "Stable Block"
+    // A stable block is adjacent words sharing the same rerankGroupId
+    let blockEnd = i;
+    while (
+      blockEnd + 1 < sortedGuesses.length &&
+      sortedGuesses[blockEnd + 1].rerankGroupId === current.rerankGroupId
+    ) {
+      blockEnd++;
+    }
+
+    const blockSize = blockEnd - i + 1;
+
+    // Optimization: If block is large (>=3), skip the middle
+    if (blockSize >= 3) {
+      // Add Head anchor (top of block)
+      batch.push(sortedGuesses[i]);
+
+      // Add Tail anchor (bottom of block) if we have room
+      if (batch.length < maxSize) {
+        batch.push(sortedGuesses[blockEnd]);
+      }
+
+      // Skip past the whole block
+      i = blockEnd + 1;
+    } else {
+      // Small block, just add it
+      batch.push(current);
+      i++;
+    }
   }
 
+  return batch;
+}
+
+/**
+ * Execute the Rerank and Apply Min-Max Normalization
+ */
+async function performSmartRerank(batch, batchHash) {
+  // Determine Ceiling and Floor from the batch's embedding scores
+  const embeddingScores = batch.map(g => g.score); // Original embedding scores
+  const ceiling = Math.max(...embeddingScores);
+  const floor = Math.min(...embeddingScores);
+
   const requestBody = {
-    guesses: top20.map(g => ({
-      word: g.word,
-      score: g.score
-    }))
+    guesses: batch.map(g => ({ word: g.word, score: g.score }))
   };
 
   try {
@@ -304,61 +363,39 @@ async function performRerank() {
       return;
     }
 
-    // Clear ALL old LLM rankings first
-    for (const g of guesses) {
-      delete g.llmRank;
-      delete g.llmScore;
-    }
+    // Increment Group ID for this new stable set
+    rerankGroupId++;
 
-    // Get the words that were ranked and their embedding scores for normalization
-    const rankedWords = data.rankings.map(r => {
-      const guess = guesses.find(g => g.word.toLowerCase() === r.word.toLowerCase());
-      return { ...r, embeddingScore: guess ? guess.score : 50 };
-    });
+    const resultCount = data.rankings.length;
 
-    // Min-max normalization: convert LLM ranks to 0-100 scale
-    // Use embedding scores of the ranked words as the scale bounds
-    const embScores = rankedWords.map(w => w.embeddingScore);
-    const embMax = Math.max(...embScores);
-    const embMin = Math.min(...embScores);
-    const N = rankedWords.length;
+    // Apply Min-Max Normalization to LLM rankings
+    for (let index = 0; index < data.rankings.length; index++) {
+      const r = data.rankings[index];
+      const guessObj = guesses.find(g => g.word.toLowerCase() === r.word.toLowerCase());
+      if (!guessObj) continue;
 
-    // Apply normalized LLM scores
-    for (const r of rankedWords) {
-      const guess = guesses.find(g => g.word.toLowerCase() === r.word.toLowerCase());
-      if (guess) {
-        guess.llmRank = r.rank;
-        // Normalize: rank 1 → embMax, rank N → embMin
-        const rawScore = N > 1
-          ? embMax - (r.rank - 1) * (embMax - embMin) / (N - 1)
-          : embMax;
-        guess.llmScore = Math.round(rawScore);
+      // Calculate normalized score
+      // Rank 1 (index 0) gets Ceiling, Last Rank gets Floor
+      let newScore;
+      if (resultCount === 1) {
+        newScore = ceiling;
+      } else {
+        const ratio = (resultCount - 1 - index) / (resultCount - 1); // 1.0 down to 0.0
+        newScore = floor + (ratio * (ceiling - floor));
       }
+
+      // Update the guess with LLM-derived score
+      guessObj.llmScore = Math.round(newScore * 100) / 100;
+      guessObj.llmRank = index + 1;
+      guessObj.rerankGroupId = rerankGroupId; // Mark as part of this stable group
     }
 
-    // Update the hash to prevent re-ranking same set
-    previousTop20Hash = getTop20Hash();
-
-    // Re-render with new LLM data
+    previousTop20Hash = batchHash;
     renderGuesses();
-    console.log('LLM re-rank complete, updated', data.rankings.length, 'guesses');
+    console.log(`Smart rerank complete: ${resultCount} words, range ${ceiling}->${floor}`);
 
   } catch (error) {
-    console.error('Error in performRerank:', error);
-  }
-}
-
-/**
- * Reset re-ranking state
- */
-function resetRerankState() {
-  stopRerankInterval();
-  lastGuessTime = null;
-  previousTop20Hash = '';
-  // Clear LLM rankings from guesses
-  for (const g of guesses) {
-    delete g.llmRank;
-    delete g.llmScore;
+    console.error('Error in performSmartRerank:', error);
   }
 }
 
@@ -721,25 +758,27 @@ function renderGuesses() {
   // Build table rows
   guessTbody.innerHTML = sorted.map((g, index) => {
     const isLatest = g.word === guesses[guesses.length - 1].word;
-    const bucketClass = getBucketClass(g.score, g.isCorrect);
-    const barClass = getBarClass(g.score, g.isCorrect);
+    const displayScore = g.llmScore ?? g.score;
+    const bucketLabel = g.isCorrect ? 'CORRECT!' : (g.bucket ?? getBucket(displayScore));
+    const bucketClass = getBucketClass(displayScore, g.isCorrect);
+    const barClass = getBarClass(displayScore, g.isCorrect);
 
     // Show LLM rank if available
     const llmDisplay = g.llmRank
-      ? `<span class="llm-rank">#${g.llmRank}</span>${g.llmScore ? `<span class="llm-score">(${g.llmScore})</span>` : ''}`
+      ? `<span class="llm-rank">#${g.llmRank}</span>${g.llmScore !== undefined ? `<span class="llm-score">(${g.llmScore})</span>` : ''}`
       : '<span class="llm-pending">—</span>';
 
     return `
       <tr class="${isLatest ? 'latest' : ''}">
         <td>${index + 1}</td>
         <td class="word-cell">${escapeHtml(g.word)}</td>
-        <td class="score-cell">${g.score}</td>
+        <td class="score-cell">${Math.round(displayScore)}</td>
         <td class="llm-cell">${llmDisplay}</td>
         <td>
           <div class="score-bar">
-            <div class="score-bar-fill ${barClass}" style="width: ${g.score}%"></div>
+            <div class="score-bar-fill ${barClass}" style="width: ${displayScore}%"></div>
           </div>
-          <span class="bucket-cell ${bucketClass}">${g.isCorrect ? 'CORRECT!' : g.bucket}</span>
+          <span class="bucket-cell ${bucketClass}">${bucketLabel}</span>
         </td>
       </tr>
     `;
