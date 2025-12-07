@@ -1181,7 +1181,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// Expose resetGame to window for the button onclick
+// Expose functions to window for button onclick
 window.resetGame = resetGame;
+window.newRandomGame = newRandomGame;
 window.submitGuess = submitGuess;
 window.startMicGuess = startMicGuess;

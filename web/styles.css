@@ -167,8 +167,14 @@ header h1 {
   font-size: 1.3rem;
 }
 
-.win-banner button {
+.win-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
   margin-top: 15px;
+}
+
+.win-banner button {
   padding: 12px 30px;
   font-size: 1.1rem;
   background: var(--success-color);
@@ -181,6 +187,15 @@ header h1 {
 
 .win-banner button:hover {
   background: #33dd77;
+}
+
+.win-banner .new-word-btn {
+  background: var(--accent-color);
+  color: var(--text-color);
+}
+
+.win-banner .new-word-btn:hover {
+  background: #1a4a70;
 }
 
 .win-tier {

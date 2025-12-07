@@ -36,7 +36,10 @@
         <p>You found the word: <span id="win-word"></span></p>
         <p>Guesses: <span id="win-guesses"></span> | Time: <span id="win-time"></span></p>
         <p id="win-tier" class="win-tier"></p>
-        <button onclick="resetGame()">Play Again</button>
+        <div class="win-buttons">
+          <button onclick="resetGame()">Play Again</button>
+          <button onclick="newRandomGame()" class="new-word-btn">New Word</button>
+        </div>
       </div>
 
       <!-- Input area -->
