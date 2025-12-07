@@ -1,12 +1,16 @@
 .aider*
 
-# Embedding cache
+# Embedding / LLM caches
 .embedding_cache/
+.llm_ranking_cache/
 
-# Node modules
+# Node / Worker build artifacts
 node_modules/
+worker/dist/
+npm-debug.log*
+yarn-error.log*
 
-# Wrangler
+# Wrangler local config
 .wrangler/
 .dev.vars
 
@@ -21,4 +25,7 @@ node_modules/
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
+.venv/
 .env
+.env.*

@@ -1,5 +1,7 @@
 # Semantic Trail - Embedding-Based Word Guessing Game
 
+👉 Play it on GitHub Pages: https://cschubiner.github.io/semantic_trail_game/
+
 Semantic Trail is a word guessing game powered by an ensemble of embedding models. Includes a comprehensive benchmark suite for evaluating embedding models against human-defined semantic similarity judgments.
 
 **Two ways to play:**
