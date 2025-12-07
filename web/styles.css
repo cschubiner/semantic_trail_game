@@ -473,6 +473,7 @@ header h1 {
 .guess-table .word-cell {
   font-weight: bold;
   text-transform: lowercase;
+  word-break: break-word;
 }
 
 .guess-table .score-cell {

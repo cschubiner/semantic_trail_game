@@ -27,7 +27,7 @@ const STORAGE_KEY = 'semanticTrail_' + new Date().toISOString().split('T')[0];
 // LLM Re-ranking state
 let rerankInterval = null;
 let lastGuessTime = null;
-const RERANK_INTERVAL_MS = 30000; // 30 seconds
+const RERANK_INTERVAL_MS = 15000; // 15 seconds - check frequently for new words
 const INACTIVITY_TIMEOUT_MS = 60000; // Stop re-ranking after 60s of no guesses
 let previousTop20Hash = ''; // Track changes to top 20
 let rerankGroupId = 0; // Unique ID for each batch sent to LLM
@@ -271,15 +271,17 @@ function clearOldStorage() {
 }
 
 // ============================================================
-// LLM Re-ranking Functions (Smart Anchor Algorithm)
+// LLM Re-ranking: Smart Anchor + Blended Score (Hybrid)
 // ============================================================
+
+const LLM_WEIGHT = 0.7; // 70% LLM, 30% Embeddings - safety net against hallucinations
 
 /**
  * Start the re-ranking interval
  */
 function startRerankInterval() {
   if (rerankInterval || DEMO_MODE) return;
-  console.log('Starting Smart LLM re-rank interval');
+  console.log('Starting Smart Anchor Re-ranker');
   rerankInterval = setInterval(checkAndRerank, RERANK_INTERVAL_MS);
 }
 
@@ -294,18 +296,20 @@ function stopRerankInterval() {
 }
 
 /**
- * Reset re-ranking state
+ * Reset re-ranking state - restore to original embedding scores
  */
 function resetRerankState() {
   stopRerankInterval();
   lastGuessTime = null;
   rerankGroupId = 0;
   previousTop20Hash = '';
-  // Clear LLM metadata from guesses
+  // Reset state to original embeddings
   for (const g of guesses) {
-    delete g.llmRank;
-    delete g.llmScore;
-    delete g.rerankGroupId;
+    g.score = g.embeddingScore || g.score;
+    g.llmScore = null;
+    g.llmRank = undefined;
+    g.rerankGroupId = 0;
+    g.bucket = getBucket(g.score);
   }
 }
 
@@ -313,6 +317,7 @@ function resetRerankState() {
  * Main Loop: Check if we need to re-rank
  */
 async function checkAndRerank() {
+  // Need enough words to make sorting meaningful
   if (gameWon || guesses.length < 3) return;
 
   // Inactivity check
@@ -321,79 +326,73 @@ async function checkAndRerank() {
     return;
   }
 
-  // Build the "Smart Batch" - skips stable blocks, explores new words
+  // Build the "Swiss Cheese" Batch - skips stable middles, prioritizes new words
   const batch = buildSmartBatch(20);
 
-  if (batch.length < 2) {
-    return;
-  }
+  // If we only have anchors (size < 3) and no new words, skip
+  if (batch.length < 3) return;
 
   // Hash check to prevent spamming the exact same request
   const batchHash = batch.map(g => g.word).join(',');
-  if (batchHash === previousTop20Hash) {
-    return;
-  }
+  if (batchHash === previousTop20Hash) return;
 
   console.log('Smart Rerank batch:', batch.map(b => `${b.word}(${b.rerankGroupId || 'new'})`).join(', '));
   await performSmartRerank(batch, batchHash);
 }
 
 /**
- * ALGORITHM: Build a batch of words to send to LLM
- *
- * Logic: Iterate down the leaderboard. If we find a contiguous block of words
- * that were previously sorted together (same rerankGroupId), keep only the
- * HEAD and TAIL as anchors, skip the body. Use saved slots for lower words.
+ * SELECTOR: "Swiss Cheese" Logic
+ * Iterates down the list. If it sees a block of words sharing the same
+ * rerankGroupId, it grabs the Head & Tail (Anchors) and skips the Body.
+ * This naturally self-heals when new words break up stable blocks.
  */
 function buildSmartBatch(maxSize) {
-  // Get current leaderboard sorted by effective score
-  const sortedGuesses = [...guesses]
+  // Sort by current effective score
+  const sorted = [...guesses]
     .filter(g => !g.isCorrect)
-    .sort((a, b) => {
-      const scoreA = a.llmScore ?? a.score;
-      const scoreB = b.llmScore ?? b.score;
-      return scoreB - scoreA;
-    });
+    .sort((a, b) => b.score - a.score);
 
   const batch = [];
   let i = 0;
 
-  while (batch.length < maxSize && i < sortedGuesses.length) {
-    const current = sortedGuesses[i];
+  while (batch.length < maxSize && i < sorted.length) {
+    const current = sorted[i];
 
-    // If never ranked by LLM, always include it
+    // Ensure state validity (for existing words loaded from storage)
+    current.embeddingScore = current.embeddingScore || current.score;
+
+    // Case A: Word is new or part of a mixed/broken group. Add it.
     if (!current.rerankGroupId) {
       batch.push(current);
       i++;
       continue;
     }
 
-    // Look ahead: find the extent of this "Stable Block"
-    // A stable block is adjacent words sharing the same rerankGroupId
+    // Case B: Word is part of a stable group. Check block size.
     let blockEnd = i;
     while (
-      blockEnd + 1 < sortedGuesses.length &&
-      sortedGuesses[blockEnd + 1].rerankGroupId === current.rerankGroupId
+      blockEnd + 1 < sorted.length &&
+      sorted[blockEnd + 1].rerankGroupId === current.rerankGroupId
     ) {
       blockEnd++;
     }
 
     const blockSize = blockEnd - i + 1;
 
-    // Optimization: If block is large (>=3), skip the middle
+    // "The 3-8 Logic": If block is big (>=3), skip the middle
     if (blockSize >= 3) {
-      // Add Head anchor (top of block)
-      batch.push(sortedGuesses[i]);
+      // Add Head (Top Anchor)
+      batch.push(sorted[i]);
 
-      // Add Tail anchor (bottom of block) if we have room
+      // Add Tail (Bottom Anchor) if space
       if (batch.length < maxSize) {
-        batch.push(sortedGuesses[blockEnd]);
+        batch.push(sorted[blockEnd]);
       }
 
-      // Skip past the whole block
+      // Skip the body (words i+1 to blockEnd-1)
       i = blockEnd + 1;
     } else {
-      // Small block, just add it
+      // Block too small or fragmented? Just add the word to re-verify it.
       batch.push(current);
       i++;
     }
@@ -403,13 +402,14 @@ function buildSmartBatch(maxSize) {
 }
 
 /**
- * Execute the Rerank and Apply Min-Max Normalization
+ * EXECUTION: Rerank -> MinMax -> Blend
+ * The blend is the safety net - embeddings always have 30% influence
  */
 async function performSmartRerank(batch, batchHash) {
-  // Determine Ceiling and Floor from the batch's embedding scores
-  const embeddingScores = batch.map(g => g.score); // Original embedding scores
-  const ceiling = Math.max(...embeddingScores);
-  const floor = Math.min(...embeddingScores);
+  // Determine Range (Ceiling & Floor) from the selected batch's current scores
+  const scores = batch.map(g => g.score);
+  const ceiling = Math.max(...scores);
+  const floor = Math.min(...scores);
 
   const requestBody = {
     guesses: batch.map(g => ({ word: g.word, score: g.score })),
@@ -435,37 +435,53 @@ async function performSmartRerank(batch, batchHash) {
       return;
     }
 
-    // Increment Group ID for this new stable set
+    // Increment Group ID: These words are now a new "stable" block
     rerankGroupId++;
 
     const resultCount = data.rankings.length;
 
-    // Apply Min-Max Normalization to LLM rankings
+    // Apply Min-Max Normalization + Blending
     for (let index = 0; index < data.rankings.length; index++) {
       const r = data.rankings[index];
-      const guessObj = guesses.find(g => g.word.toLowerCase() === r.word.toLowerCase());
-      if (!guessObj) continue;
+      const g = guesses.find(x => x.word.toLowerCase() === r.word.toLowerCase());
+      if (!g) continue;
 
-      // Calculate normalized score
-      // Rank 1 (index 0) gets Ceiling, Last Rank gets Floor
-      let newScore;
-      if (resultCount === 1) {
-        newScore = ceiling;
+      // Ensure embeddingScore exists
+      g.embeddingScore = g.embeddingScore || g.score;
+
+      // 1. Min-Max Normalization (Rank -> Target Score)
+      let target;
+      if (resultCount <= 1) {
+        target = ceiling;
       } else {
-        const ratio = (resultCount - 1 - index) / (resultCount - 1); // 1.0 down to 0.0
-        newScore = floor + (ratio * (ceiling - floor));
+        // Rank 1 gets Ceiling, Rank N gets Floor
+        const ratio = (resultCount - 1 - index) / (resultCount - 1);
+        target = floor + (ratio * (ceiling - floor));
       }
 
-      // Update the guess with LLM-derived score
-      guessObj.llmScore = Math.round(newScore * 100) / 100;
-      guessObj.llmRank = index + 1;
-      guessObj.rerankGroupId = rerankGroupId; // Mark as part of this stable group
+      // 2. Smooth the LLM opinion (50/50 blend of old vs new)
+      if (g.llmScore === null) {
+        g.llmScore = target;
+      } else {
+        g.llmScore = (0.5 * g.llmScore) + (0.5 * target);
+      }
+
+      // 3. THE BLEND: Combine LLM + Embedding (safety net)
+      g.score = Number((
+        (LLM_WEIGHT * g.llmScore) +
+        ((1 - LLM_WEIGHT) * g.embeddingScore)
+      ).toFixed(2));
+
+      // 4. Update State
+      g.rerankGroupId = rerankGroupId;
+      g.llmRank = index + 1;
+      g.bucket = getBucket(g.score);
     }
 
     previousTop20Hash = batchHash;
     renderGuesses();
     saveGameState();
-    console.log(`Smart rerank complete: ${resultCount} words, range ${ceiling}->${floor}`);
+    console.log(`Smart rerank complete: ${resultCount} words, ceiling=${ceiling.toFixed(1)}, floor=${floor.toFixed(1)}`);
 
   } catch (error) {
     console.error('Error in performSmartRerank:', error);
@@ -545,10 +561,14 @@ async function processGuess(guess) {
     }
 
     // Add to guesses (compute bucket on frontend)
+    // HYBRID STATE: track embedding score separately as permanent anchor
     guesses.push({
       word: result.guess,
       similarity: result.similarity,
-      score: result.score,
+      score: result.score,              // Effective score (starts as embedding, gets blended)
+      embeddingScore: result.score,     // Permanent anchor - never changes
+      llmScore: null,                   // LLM's opinion (null = not yet ranked)
+      rerankGroupId: 0,                 // 0 = never sorted by LLM
       bucket: getBucket(result.score),
       isCorrect: result.isCorrect || false,
     });
@@ -841,16 +861,12 @@ async function getLLMHint() {
     return;
   }
 
-  // Get top 5 guesses sorted by score
+  // Get top 5 guesses sorted by score (g.score is now the blended score)
   const topGuesses = [...guesses]
     .filter(g => !g.isCorrect)
-    .sort((a, b) => {
-      const scoreA = a.llmScore ?? a.score;
-      const scoreB = b.llmScore ?? b.score;
-      return scoreB - scoreA;
-    })
+    .sort((a, b) => b.score - a.score)
     .slice(0, 5)
-    .map(g => ({ word: g.word, score: g.llmScore ?? g.score }));
+    .map(g => ({ word: g.word, score: g.score }));
 
   try {
     hintLLMBtn.disabled = true;
@@ -910,7 +926,8 @@ function renderRecentGuesses() {
   const recent = guesses.slice(-5).reverse();
 
   recentList.innerHTML = recent.map(g => {
-    const score = Math.round(g.llmScore ?? g.score);
+    // g.score is now the blended effective score
+    const score = Math.round(g.score);
     const bucketClass = getBucketClass(score, g.isCorrect);
     const isCorrect = g.isCorrect ? ' correct' : '';
 
@@ -939,24 +956,20 @@ function renderGuesses() {
   noGuessesEl.classList.add('hidden');
   guessTable.classList.remove('hidden');
 
-  // Sort by best available score (llmScore if exists, else embedding score)
-  // This allows new words to slot into the appropriate position
-  const sorted = [...guesses].sort((a, b) => {
-    const scoreA = a.llmScore ?? a.score;
-    const scoreB = b.llmScore ?? b.score;
-    return scoreB - scoreA; // Descending (highest first)
-  });
+  // Sort by effective score (g.score is now the blended score)
+  const sorted = [...guesses].sort((a, b) => b.score - a.score);
 
   // Build table rows
   guessTbody.innerHTML = sorted.map((g, index) => {
     const isLatest = g.word === guesses[guesses.length - 1].word;
-    const displayScore = g.llmScore ?? g.score;
-    const bucketLabel = g.isCorrect ? 'CORRECT!' : (g.bucket ?? getBucket(displayScore));
+    // g.score is now the blended effective score
+    const displayScore = g.score;
+    const bucketLabel = g.isCorrect ? 'CORRECT!' : (g.bucket || getBucket(displayScore));
     const bucketClass = getBucketClass(displayScore, g.isCorrect);
     const barClass = getBarClass(displayScore, g.isCorrect);
 
-    // Show LLM score if available (yellow, rounded)
-    const llmDisplay = g.llmScore !== undefined
+    // Show LLM score if available (yellow, rounded) - this is the raw LLM opinion
+    const llmDisplay = g.llmScore !== null && g.llmScore !== undefined
       ? `<span class="llm-score">${Math.round(g.llmScore)}</span>`
       : '<span class="llm-pending">—</span>';
 
