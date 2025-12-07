@@ -7,10 +7,10 @@
 
 import { WORD_LIST } from './wordlist';
 
-// Ensemble models (top 2 from benchmark)
+// Ensemble models (production pair)
 const ENSEMBLE_MODELS = [
-  'openai/text-embedding-3-large',
-  'thenlper/gte-large',
+  'google/gemini-embedding-001',
+  'thenlper/gte-base',
 ];
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/embeddings';

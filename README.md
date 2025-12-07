@@ -70,7 +70,7 @@ You try to guess a secret word. After each guess, you receive a similarity score
 ```
 ════════════════════════════════════════════════════════════
   SEMANTIC TRAIL - Find the secret word!
-  Ensemble: text-embedding-3-large + gte-large
+  Ensemble: gemini-embedding-001 + gte-base
 ════════════════════════════════════════════════════════════
 
   #    WORD               SCORE
