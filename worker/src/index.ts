@@ -23,6 +23,7 @@ interface Env {
   EMBED_CACHE: KVNamespace;
   OPENROUTER_API_KEY: string;
   SECRET_SALT: string;
+  ALLOWED_ORIGINS?: string;
 }
 
 interface ScoreRequest {
@@ -52,6 +53,35 @@ function getBucket(score: number): string {
   if (score >= 40) return '〰 Tepid';
   if (score >= 20) return '❄ Cold';
   return '🧊 Freezing';
+}
+
+/**
+ * Build CORS headers based on allowed origins list.
+ * Defaults to "*" if ALLOWED_ORIGINS is not set.
+ */
+function getCorsHeaders(request: Request, env: Env): Record<string, string> {
+  const allowed = (env.ALLOWED_ORIGINS ?? '*')
+    .split(',')
+    .map(origin => origin.trim())
+    .filter(Boolean);
+
+  const origin = request.headers.get('Origin');
+  let allowOrigin = '*';
+
+  if (allowed.length && allowed[0] !== '*') {
+    if (origin && allowed.includes(origin)) {
+      allowOrigin = origin;
+    } else {
+      // Default to first allowed origin if incoming origin is missing/unmatched
+      allowOrigin = allowed[0];
+    }
+  }
+
+  return {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
 }
 
 /**
@@ -194,17 +224,17 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
   try {
     body = await request.json() as ScoreRequest;
   } catch {
-    return jsonResponse({ error: 'Invalid JSON body' }, 400);
+    return jsonResponse({ error: 'Invalid JSON body' }, 400, request, env);
   }
 
   // Validate guess
   const guess = body.guess?.toLowerCase().trim();
   if (!guess) {
-    return jsonResponse({ error: 'Missing guess field' }, 400);
+    return jsonResponse({ error: 'Missing guess field' }, 400, request, env);
   }
 
   if (!/^[a-z]+$/.test(guess)) {
-    return jsonResponse({ error: 'Guess must contain only letters' }, 400);
+    return jsonResponse({ error: 'Guess must contain only letters' }, 400, request, env);
   }
 
   // Get today's secret word
@@ -219,7 +249,7 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
       bucket: '🎉 CORRECT!',
       isCorrect: true,
     };
-    return jsonResponse(response);
+    return jsonResponse(response, 200, request, env);
   }
 
   // Check if guess is in word list (optional validation)
@@ -239,12 +269,14 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
       isCorrect: false,
     };
 
-    return jsonResponse(response);
+    return jsonResponse(response, 200, request, env);
   } catch (error) {
     console.error('Error getting similarity:', error);
     return jsonResponse(
       { error: `Failed to compute similarity: ${error instanceof Error ? error.message : 'Unknown error'}` },
-      500
+      500,
+      request,
+      env
     );
   }
 }
@@ -252,14 +284,23 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
 /**
  * Create JSON response with CORS headers
  */
-function jsonResponse(data: ScoreResponse | ErrorResponse, status = 200): Response {
+function jsonResponse(
+  data: ScoreResponse | ErrorResponse,
+  status = 200,
+  request?: Request,
+  env?: Env
+): Response {
+  const corsHeaders = request && env ? getCorsHeaders(request, env) : {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type',
+  };
+
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      ...corsHeaders,
     },
   });
 }
@@ -267,13 +308,12 @@ function jsonResponse(data: ScoreResponse | ErrorResponse, status = 200): Respon
 /**
  * Handle CORS preflight requests
  */
-function handleOptions(): Response {
+function handleOptions(request: Request, env: Env): Response {
+  const corsHeaders = getCorsHeaders(request, env);
   return new Response(null, {
     status: 204,
     headers: {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      ...corsHeaders,
     },
   });
 }
@@ -287,7 +327,7 @@ export default {
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return handleOptions();
+      return handleOptions(request, env);
     }
 
     // Route requests
@@ -297,10 +337,10 @@ export default {
 
     // Health check endpoint
     if (url.pathname === '/health' && request.method === 'GET') {
-      return jsonResponse({ status: 'ok' } as unknown as ScoreResponse);
+      return jsonResponse({ status: 'ok' } as unknown as ScoreResponse, 200, request, env);
     }
 
     // 404 for unknown routes
-    return jsonResponse({ error: 'Not found' }, 404);
+    return jsonResponse({ error: 'Not found' }, 404, request, env);
   },
 };

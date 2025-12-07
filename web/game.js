@@ -8,8 +8,8 @@
  */
 
 // Configuration
-// Change this URL to your deployed Cloudflare Worker URL
-const API_URL = 'https://semantic-trail-backend.yourname.workers.dev/score';
+// Cloudflare Worker backend URL
+const API_URL = 'https://semantic-trail-backend.cschubiner.workers.dev/score';
 
 // For demo/testing without backend, set this to true
 const DEMO_MODE = false;
