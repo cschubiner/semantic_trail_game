@@ -9,7 +9,8 @@
 
 // Configuration
 // Cloudflare Worker backend URL
-const API_URL = 'https://semantic-trail-backend.cschubiner.workers.dev/score';
+const API_BASE = 'https://semantic-trail-backend.cschubiner.workers.dev';
+const API_URL = API_BASE + '/score';
 
 // For demo/testing without backend, set this to true
 const DEMO_MODE = false;
@@ -30,6 +31,10 @@ const winBanner = document.getElementById('win-banner');
 const winWord = document.getElementById('win-word');
 const winGuesses = document.getElementById('win-guesses');
 const guessTable = document.getElementById('guess-table');
+const hintLetterBtn = document.getElementById('hint-letter-btn');
+const hintLengthBtn = document.getElementById('hint-length-btn');
+const revealBtn = document.getElementById('reveal-btn');
+const hintDisplay = document.getElementById('hint-display');
 
 // ============================================================
 // Core Game Logic
@@ -218,6 +223,8 @@ function resetGame() {
   guesses = [];
   gameWon = false;
   winBanner.classList.add('hidden');
+  hintDisplay.classList.add('hidden');
+  hintDisplay.textContent = '';
   setInputDisabled(false);
   showStatus('New game started!', 'success');
   renderGuesses();
@@ -227,6 +234,77 @@ function resetGame() {
   setTimeout(() => {
     if (!gameWon) showStatus('', '');
   }, 2000);
+}
+
+/**
+ * Request a hint from the backend
+ */
+async function getHint(type) {
+  if (gameWon) {
+    showStatus('Game already won!', 'info');
+    return;
+  }
+
+  if (DEMO_MODE) {
+    // Demo mode hints for "ocean"
+    if (type === 'letter') {
+      showHint('The word starts with "O"');
+    } else {
+      showHint('The word has 5 letters');
+    }
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/hint?type=${type}`);
+    if (!response.ok) {
+      throw new Error('Failed to get hint');
+    }
+    const data = await response.json();
+    showHint(data.hint);
+  } catch (error) {
+    console.error('Error getting hint:', error);
+    showStatus('Failed to get hint', 'error');
+  }
+}
+
+/**
+ * Reveal the secret word (give up)
+ */
+async function revealWord() {
+  if (gameWon) {
+    showStatus('Game already won!', 'info');
+    return;
+  }
+
+  if (DEMO_MODE) {
+    showHint('The secret word was: OCEAN');
+    gameWon = true;
+    setInputDisabled(true);
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/reveal`);
+    if (!response.ok) {
+      throw new Error('Failed to reveal word');
+    }
+    const data = await response.json();
+    showHint(data.message);
+    gameWon = true;
+    setInputDisabled(true);
+  } catch (error) {
+    console.error('Error revealing word:', error);
+    showStatus('Failed to reveal word', 'error');
+  }
+}
+
+/**
+ * Display a hint message
+ */
+function showHint(message) {
+  hintDisplay.textContent = message;
+  hintDisplay.classList.remove('hidden');
 }
 
 // ============================================================
@@ -513,6 +591,11 @@ guessBtn.addEventListener('click', () => submitGuess());
 
 // Mic button click
 micBtn.addEventListener('click', startMicGuess);
+
+// Hint and reveal button clicks
+hintLetterBtn.addEventListener('click', () => getHint('letter'));
+hintLengthBtn.addEventListener('click', () => getHint('length'));
+revealBtn.addEventListener('click', revealWord);
 
 // Focus input on page load
 document.addEventListener('DOMContentLoaded', () => {

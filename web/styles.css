@@ -230,6 +230,61 @@ header h1 {
   font-style: italic;
 }
 
+/* Hint buttons */
+.hint-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-bottom: 15px;
+  flex-wrap: wrap;
+}
+
+.hint-btn {
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  background: var(--card-bg);
+  border: 1px solid var(--accent-color);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.hint-btn:hover {
+  background: var(--accent-color);
+  color: var(--text-color);
+  border-color: var(--warm-color);
+}
+
+.reveal-btn {
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  background: rgba(255, 68, 68, 0.1);
+  border: 1px solid var(--error-color);
+  border-radius: 6px;
+  color: var(--error-color);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.reveal-btn:hover {
+  background: var(--error-color);
+  color: var(--bg-color);
+}
+
+/* Hint display */
+.hint-display {
+  text-align: center;
+  padding: 12px 20px;
+  margin-bottom: 15px;
+  background: rgba(255, 204, 0, 0.15);
+  border: 1px solid var(--warm-color);
+  border-radius: 8px;
+  color: var(--warm-color);
+  font-weight: bold;
+  font-size: 1.1rem;
+}
+
 /* Guess table */
 .guess-table-container {
   background: var(--card-bg);

@@ -19,6 +19,15 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/embeddings';
 const MIN_SIM = 0.20;
 const MAX_SIM = 0.85;
 
+const EASTERN_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  hour12: false,
+});
+
 interface Env {
   EMBED_CACHE: KVNamespace;
   OPENROUTER_API_KEY: string;
@@ -41,6 +50,16 @@ interface ScoreResponse {
 
 interface ErrorResponse {
   error: string;
+}
+
+interface HintResponse {
+  hint: string;
+  hintType: 'first_letter' | 'length';
+}
+
+interface RevealResponse {
+  word: string;
+  message: string;
 }
 
 /**
@@ -79,7 +98,7 @@ function getCorsHeaders(request: Request, env: Env): Record<string, string> {
 
   return {
     'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   };
 }
@@ -91,6 +110,42 @@ function similarityToScore(similarity: number): number {
   if (similarity >= MAX_SIM) return 100;
   if (similarity <= MIN_SIM) return 0;
   return Math.round((similarity - MIN_SIM) / (MAX_SIM - MIN_SIM) * 100);
+}
+
+/**
+ * Get year/month/day/hour in America/New_York.
+ */
+function getEasternParts(date: Date): { year: number; month: string; day: string; hour: number } {
+  const parts = EASTERN_FORMATTER.formatToParts(date);
+  const lookup: Record<string, string> = {};
+  for (const { type, value } of parts) {
+    if (type !== 'literal') {
+      lookup[type] = value;
+    }
+  }
+  return {
+    year: Number(lookup.year),
+    month: lookup.month,
+    day: lookup.day,
+    hour: Number(lookup.hour),
+  };
+}
+
+/**
+ * Get the date string (YYYY-MM-DD) that represents the "game day".
+ * The day rolls over at 5am Eastern Time.
+ */
+function getGameDateString(): string {
+  const now = new Date();
+  const parts = getEasternParts(now);
+
+  if (parts.hour < 5) {
+    const prev = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const prevParts = getEasternParts(prev);
+    return `${prevParts.year}-${prevParts.month}-${prevParts.day}`;
+  }
+
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 /**
@@ -135,8 +190,8 @@ async function hashString(str: string): Promise<number> {
  * Get today's secret word deterministically
  */
 async function getSecretWord(salt: string): Promise<string> {
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD in UTC
-  const hash = await hashString(today + salt);
+  const gameDay = getGameDateString(); // YYYY-MM-DD in ET with 5am cutoff
+  const hash = await hashString(gameDay + salt);
   const index = hash % WORD_LIST.length;
   return WORD_LIST[index];
 }
@@ -282,10 +337,47 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
 }
 
 /**
+ * Handle GET /hint?type=letter or /hint?type=length
+ */
+async function handleHint(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const hintType = url.searchParams.get('type') || 'letter';
+
+  const secret = await getSecretWord(env.SECRET_SALT);
+
+  let hint: string;
+  let type: 'first_letter' | 'length';
+
+  if (hintType === 'length') {
+    hint = `The word has ${secret.length} letters`;
+    type = 'length';
+  } else {
+    hint = `The word starts with "${secret[0].toUpperCase()}"`;
+    type = 'first_letter';
+  }
+
+  const response: HintResponse = { hint, hintType: type };
+  return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+}
+
+/**
+ * Handle GET /reveal
+ */
+async function handleReveal(request: Request, env: Env): Promise<Response> {
+  const secret = await getSecretWord(env.SECRET_SALT);
+
+  const response: RevealResponse = {
+    word: secret,
+    message: `The secret word was: ${secret.toUpperCase()}`,
+  };
+  return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+}
+
+/**
  * Create JSON response with CORS headers
  */
 function jsonResponse(
-  data: ScoreResponse | ErrorResponse,
+  data: ScoreResponse | ErrorResponse | HintResponse | RevealResponse,
   status = 200,
   request?: Request,
   env?: Env
@@ -333,6 +425,16 @@ export default {
     // Route requests
     if (url.pathname === '/score' && request.method === 'POST') {
       return handleScore(request, env);
+    }
+
+    // Hint endpoint
+    if (url.pathname === '/hint' && request.method === 'GET') {
+      return handleHint(request, env);
+    }
+
+    // Reveal endpoint
+    if (url.pathname === '/reveal' && request.method === 'GET') {
+      return handleReveal(request, env);
     }
 
     // Health check endpoint

@@ -55,7 +55,7 @@ The project includes a web app version that anyone can play in a browser.
 ### Key Features
 
 - **Lazy KV Cache**: Embeddings are cached on-demand. KV starts empty and fills as words are guessed.
-- **Deterministic Daily Word**: Same secret word for everyone each day (based on date + secret salt).
+- **Deterministic Daily Word**: Same secret word for everyone each day (based on date + secret salt), resets at 5am ET.
 - **Voice Input**: Web Speech API enables microphone guessing in supported browsers.
 - **CORS Enabled**: Frontend can be hosted anywhere (GitHub Pages, etc.).
 
@@ -205,17 +205,37 @@ Set your OpenRouter API key as a secret:
 wrangler secret put OPENROUTER_API_KEY
 ```
 
-#### 4. Install Dependencies and Deploy
+#### 4. Common Deploy Commands (Worker)
 
 ```bash
+# One-time: log in to Cloudflare
+wrangler login
+
+# One-time: create KV namespace and paste ID into wrangler.toml
 cd worker
-npm install
-wrangler deploy
+wrangler kv:namespace create EMBED_CACHE
+
+# One-time: set secrets (interactive prompt)
+npx wrangler secret put OPENROUTER_API_KEY
+
+# One-time: set vars in wrangler.toml (non-secret)
+# [vars]
+# SECRET_SALT = "your-random-secret-string"
+# ALLOWED_ORIGINS = "https://cschubiner.github.io"
+
+# Deploy worker
+npx wrangler deploy
+
+# Tail logs (useful for debugging)
+npx wrangler tail
+
+# Local dev server
+npx wrangler dev
 ```
 
 Wrangler will print your Worker URL, e.g.:
 ```
-https://semantic-trail-backend.yourname.workers.dev
+https://semantic-trail-backend.<your-subdomain>.workers.dev
 ```
 
 #### 5. Configure Frontend
@@ -223,16 +243,18 @@ https://semantic-trail-backend.yourname.workers.dev
 Update `web/game.js` with your Worker URL:
 
 ```javascript
-const API_URL = 'https://semantic-trail-backend.yourname.workers.dev/score';
+const API_URL = 'https://semantic-trail-backend.<your-subdomain>.workers.dev/score';
 const DEMO_MODE = false;  // Set to false to use real backend
 ```
 
-#### 6. Host Frontend
+#### 6. Host Frontend (GitHub Pages)
 
-You can host the `web/` folder on:
-- **GitHub Pages**: Push to a `gh-pages` branch or use `/docs` folder
-- **Cloudflare Pages**: Connect your repo
-- **Any static host**: Netlify, Vercel, etc.
+This repo includes a GitHub Actions workflow (`.github/workflows/pages.yml`) that publishes `web/` to Pages.
+
+Steps:
+1. In GitHub → Settings → Pages, set Source to “GitHub Actions.”
+2. Push to `master`/`main` — the workflow uploads `web/` as the Pages artifact and deploys.
+3. Confirm the Pages URL (e.g., `https://cschubiner.github.io/semantic_trail_game/`).
 
 For local testing:
 
