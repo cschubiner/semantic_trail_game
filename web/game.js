@@ -16,8 +16,33 @@ const API_URL = API_BASE + '/score';
 const DEMO_MODE = false;
 
 // Game state
-let guesses = []; // Array of { word, similarity, score, bucket, isCorrect }
+let guesses = []; // Array of { word, similarity, score, bucket, isCorrect, llmRank?, llmScore? }
 let gameWon = false;
+
+// LLM Re-ranking state
+let rerankInterval = null;
+let lastGuessTime = null;
+const RERANK_INTERVAL_MS = 30000; // 30 seconds
+const INACTIVITY_TIMEOUT_MS = 60000; // Stop re-ranking after 60s of no guesses
+let previousTop20Hash = ''; // Track changes to top 20
+
+// Timer state
+let timerStarted = false;
+let timerStartTime = null;
+let timerPenaltyMs = 0; // Penalty time from hints (in ms)
+let timerInterval = null;
+let finalTime = null;
+
+// Score tiers (time in seconds -> tier name)
+const SCORE_TIERS = [
+  { maxSeconds: 180, name: 'Genius', emoji: '🧠', color: '#ff44ff' },      // 3 min
+  { maxSeconds: 240, name: 'Brilliant', emoji: '💎', color: '#44ffff' },   // 4 min
+  { maxSeconds: 300, name: 'Sharp', emoji: '🎯', color: '#44ff44' },       // 5 min
+  { maxSeconds: 480, name: 'Clever', emoji: '🦊', color: '#ffcc00' },      // 8 min
+  { maxSeconds: 600, name: 'Good', emoji: '👍', color: '#ff8844' },        // 10 min
+  { maxSeconds: 900, name: 'Solid', emoji: '🪨', color: '#ff6666' },       // 15 min
+  { maxSeconds: Infinity, name: 'Persistent', emoji: '🐢', color: '#888888' }, // 20+ min
+];
 
 // DOM elements
 const guessInput = document.getElementById('guess-input');
@@ -35,6 +60,287 @@ const hintLetterBtn = document.getElementById('hint-letter-btn');
 const hintLengthBtn = document.getElementById('hint-length-btn');
 const revealBtn = document.getElementById('reveal-btn');
 const hintDisplay = document.getElementById('hint-display');
+const timerDisplay = document.getElementById('timer-display');
+const timerTime = document.getElementById('timer-time');
+const timerTier = document.getElementById('timer-tier');
+const timerProgress = document.getElementById('timer-progress');
+const timerNextTier = document.getElementById('timer-next-tier');
+const winTime = document.getElementById('win-time');
+const winTierEl = document.getElementById('win-tier');
+
+// ============================================================
+// Timer Functions
+// ============================================================
+
+/**
+ * Get elapsed time in seconds (including penalty)
+ */
+function getElapsedSeconds() {
+  if (!timerStartTime) return 0;
+  const now = finalTime || Date.now();
+  return Math.floor((now - timerStartTime + timerPenaltyMs) / 1000);
+}
+
+/**
+ * Get current tier based on elapsed time
+ */
+function getCurrentTier(seconds) {
+  for (const tier of SCORE_TIERS) {
+    if (seconds < tier.maxSeconds) {
+      return tier;
+    }
+  }
+  return SCORE_TIERS[SCORE_TIERS.length - 1];
+}
+
+/**
+ * Get next tier (the one you'll drop to if time continues)
+ */
+function getNextTier(seconds) {
+  for (let i = 0; i < SCORE_TIERS.length; i++) {
+    if (seconds < SCORE_TIERS[i].maxSeconds) {
+      return i < SCORE_TIERS.length - 1 ? SCORE_TIERS[i + 1] : null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Format seconds as MM:SS
+ */
+function formatTime(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Start the timer
+ */
+function startTimer() {
+  if (timerStarted) return;
+  timerStarted = true;
+  timerStartTime = Date.now();
+  timerDisplay.classList.remove('hidden');
+
+  timerInterval = setInterval(updateTimerDisplay, 100);
+  updateTimerDisplay();
+}
+
+/**
+ * Stop the timer
+ */
+function stopTimer() {
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  finalTime = Date.now();
+}
+
+/**
+ * Add penalty time (for using hints)
+ */
+function addTimerPenalty(seconds) {
+  timerPenaltyMs += seconds * 1000;
+  updateTimerDisplay();
+  showStatus(`+${seconds}s penalty added`, 'info');
+}
+
+/**
+ * Update the timer display UI
+ */
+function updateTimerDisplay() {
+  const elapsed = getElapsedSeconds();
+  const currentTier = getCurrentTier(elapsed);
+  const nextTier = getNextTier(elapsed);
+
+  // Update time display
+  timerTime.textContent = formatTime(elapsed);
+
+  // Update current tier
+  timerTier.textContent = `${currentTier.emoji} ${currentTier.name}`;
+  timerTier.style.color = currentTier.color;
+
+  // Update progress bar and next tier info
+  if (nextTier && !gameWon) {
+    const tierStart = SCORE_TIERS[SCORE_TIERS.indexOf(currentTier) - 1]?.maxSeconds || 0;
+    const tierEnd = currentTier.maxSeconds;
+    const progress = ((elapsed - tierStart) / (tierEnd - tierStart)) * 100;
+
+    timerProgress.style.width = `${Math.min(progress, 100)}%`;
+    timerProgress.style.backgroundColor = currentTier.color;
+
+    const secondsLeft = currentTier.maxSeconds - elapsed;
+    timerNextTier.textContent = `${formatTime(secondsLeft)} until ${nextTier.name}`;
+    timerNextTier.classList.remove('hidden');
+  } else {
+    timerProgress.style.width = '100%';
+    timerProgress.style.backgroundColor = currentTier.color;
+    timerNextTier.classList.add('hidden');
+  }
+}
+
+/**
+ * Reset the timer
+ */
+function resetTimer() {
+  timerStarted = false;
+  timerStartTime = null;
+  timerPenaltyMs = 0;
+  finalTime = null;
+  if (timerInterval) {
+    clearInterval(timerInterval);
+    timerInterval = null;
+  }
+  timerDisplay.classList.add('hidden');
+}
+
+// ============================================================
+// LLM Re-ranking Functions
+// ============================================================
+
+/**
+ * Get top N guesses by embedding score (excluding correct answer)
+ */
+function getTopNByEmbeddingScore(n) {
+  return [...guesses]
+    .filter(g => !g.isCorrect)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, n);
+}
+
+/**
+ * Generate a hash of the top 20 for change detection
+ */
+function getTop20Hash() {
+  const top20 = getTopNByEmbeddingScore(20);
+  return top20.map(g => g.word).join(',');
+}
+
+/**
+ * Start the re-ranking interval
+ */
+function startRerankInterval() {
+  if (rerankInterval || DEMO_MODE) return;
+
+  console.log('Starting LLM re-rank interval');
+  rerankInterval = setInterval(checkAndRerank, RERANK_INTERVAL_MS);
+}
+
+/**
+ * Stop the re-ranking interval
+ */
+function stopRerankInterval() {
+  if (rerankInterval) {
+    console.log('Stopping LLM re-rank interval');
+    clearInterval(rerankInterval);
+    rerankInterval = null;
+  }
+}
+
+/**
+ * Check conditions and trigger re-rank if needed
+ */
+async function checkAndRerank() {
+  // Don't re-rank if game is won or not enough guesses
+  if (gameWon || guesses.length < 2) {
+    return;
+  }
+
+  // Don't re-rank if user has been inactive too long
+  if (lastGuessTime && Date.now() - lastGuessTime > INACTIVITY_TIMEOUT_MS) {
+    console.log('Stopping re-rank due to inactivity');
+    stopRerankInterval();
+    return;
+  }
+
+  // Check if top 20 has changed
+  const currentHash = getTop20Hash();
+  if (currentHash === previousTop20Hash) {
+    console.log('Top 20 unchanged, skipping re-rank');
+    return;
+  }
+
+  console.log('Top 20 changed, triggering LLM re-rank');
+  await performRerank();
+}
+
+/**
+ * Perform LLM re-ranking of top guesses
+ */
+async function performRerank() {
+  const top20 = getTopNByEmbeddingScore(20);
+
+  if (top20.length < 2) {
+    return;
+  }
+
+  const requestBody = {
+    guesses: top20.map(g => ({
+      word: g.word,
+      score: g.score
+    }))
+  };
+
+  try {
+    const response = await fetch(`${API_BASE}/rerank`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok) {
+      console.error('Rerank request failed:', response.status);
+      return;
+    }
+
+    const data = await response.json();
+
+    if (data.rateLimited) {
+      console.log('LLM rate limited:', data.message);
+      return;
+    }
+
+    // Update guesses with LLM rankings
+    const rankingMap = new Map();
+    for (const r of data.rankings) {
+      rankingMap.set(r.word.toLowerCase(), { rank: r.rank, llmScore: r.llmScore });
+    }
+
+    for (const g of guesses) {
+      const rankInfo = rankingMap.get(g.word.toLowerCase());
+      if (rankInfo) {
+        g.llmRank = rankInfo.rank;
+        g.llmScore = rankInfo.llmScore;
+      }
+    }
+
+    // Update the hash to prevent re-ranking same set
+    previousTop20Hash = getTop20Hash();
+
+    // Re-render with new LLM data
+    renderGuesses();
+    console.log('LLM re-rank complete, updated', data.rankings.length, 'guesses');
+
+  } catch (error) {
+    console.error('Error in performRerank:', error);
+  }
+}
+
+/**
+ * Reset re-ranking state
+ */
+function resetRerankState() {
+  stopRerankInterval();
+  lastGuessTime = null;
+  previousTop20Hash = '';
+  // Clear LLM rankings from guesses
+  for (const g of guesses) {
+    delete g.llmRank;
+    delete g.llmScore;
+  }
+}
 
 // ============================================================
 // Core Game Logic
@@ -67,6 +373,11 @@ async function submitGuess(word = null) {
   setInputDisabled(true);
   showStatus('Thinking...', 'info');
 
+  // Start timer on first guess
+  if (!timerStarted) {
+    startTimer();
+  }
+
   try {
     let result;
 
@@ -97,6 +408,12 @@ async function submitGuess(word = null) {
       bucket: result.bucket,
       isCorrect: result.isCorrect || false,
     });
+
+    // Track last guess time and start re-rank interval
+    lastGuessTime = Date.now();
+    if (!rerankInterval && !DEMO_MODE) {
+      startRerankInterval();
+    }
 
     // Check for win
     if (result.isCorrect) {
@@ -209,8 +526,19 @@ function getRank(score) {
  */
 function handleWin(word) {
   gameWon = true;
+
+  // Stop the timer and re-ranking
+  stopTimer();
+  stopRerankInterval();
+  const elapsed = getElapsedSeconds();
+  const finalTier = getCurrentTier(elapsed);
+
   winWord.textContent = word.toUpperCase();
   winGuesses.textContent = guesses.length;
+  winTime.textContent = formatTime(elapsed);
+  winTierEl.textContent = `${finalTier.emoji} ${finalTier.name}`;
+  winTierEl.style.color = finalTier.color;
+
   winBanner.classList.remove('hidden');
   setInputDisabled(true);
   showStatus('', '');
@@ -225,6 +553,8 @@ function resetGame() {
   winBanner.classList.add('hidden');
   hintDisplay.classList.add('hidden');
   hintDisplay.textContent = '';
+  resetTimer();
+  resetRerankState();
   setInputDisabled(false);
   showStatus('New game started!', 'success');
   renderGuesses();
@@ -244,6 +574,14 @@ async function getHint(type) {
     showStatus('Game already won!', 'info');
     return;
   }
+
+  // Start timer if not started (penalty still applies)
+  if (!timerStarted) {
+    startTimer();
+  }
+
+  // Add 60 second penalty for using hints
+  addTimerPenalty(60);
 
   if (DEMO_MODE) {
     // Demo mode hints for "ocean"
@@ -333,12 +671,17 @@ function renderGuesses() {
     const bucketClass = getBucketClass(g.score, g.isCorrect);
     const barClass = getBarClass(g.score, g.isCorrect);
 
+    // Show LLM rank if available
+    const llmDisplay = g.llmRank
+      ? `<span class="llm-rank">#${g.llmRank}</span>${g.llmScore ? `<span class="llm-score">(${g.llmScore})</span>` : ''}`
+      : '<span class="llm-pending">—</span>';
+
     return `
       <tr class="${isLatest ? 'latest' : ''}">
         <td>${index + 1}</td>
         <td class="word-cell">${escapeHtml(g.word)}</td>
         <td class="score-cell">${g.score}</td>
-        <td class="similarity-cell">${g.similarity.toFixed(3)}</td>
+        <td class="llm-cell">${llmDisplay}</td>
         <td>
           <div class="score-bar">
             <div class="score-bar-fill ${barClass}" style="width: ${g.score}%"></div>

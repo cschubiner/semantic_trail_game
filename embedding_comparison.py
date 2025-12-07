@@ -41,6 +41,8 @@ EMBEDDING_MODELS = [
 LLM_RANKING_MODELS = [
     ("openai/gpt-4o-mini", 0.15),           # $0.15/M input, supports structured outputs
     ("google/gemini-2.0-flash-001", 0.10),  # $0.10/M input, fast
+    ("google/gemini-2.5-flash-lite", 0.02), # Gemini 2.5 Flash Lite
+    ("google/gemini-2.5-flash", 0.15),      # Gemini 2.5 Flash
     ("deepseek/deepseek-v3.2", 0.14),       # DeepSeek V3.2
     ("openai/gpt-oss-120b", 0.50),          # GPT OSS 120B
     ("openai/gpt-oss-20b", 0.10),           # GPT OSS 20B
@@ -868,7 +870,7 @@ def print_ranked_results(
 def create_ensemble_similarities(
     results: dict[str, dict[str, float]],
     top_n: int = 3,
-    model_correlations: dict[str, float] = None,
+    model_correlations: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """
     Create ensemble similarities by averaging similarity scores from top N models.
@@ -913,9 +915,12 @@ def run_ensemble_evaluation(
     all_correlations: list[dict[str, float]],
     expected_scores: dict[str, dict[str, int]],
     top_n_options: list[int] = [2, 3, 5],
+    allowed_models: set[str] | None = None,
+    label: str = "",
 ) -> dict[str, float]:
     """
     Evaluate ensemble approaches by combining top models.
+    This can be scoped to a subset of models (e.g., embeddings-only or LLM-only).
 
     Args:
         all_results: {target_word: {model: {word: similarity}}}
@@ -935,6 +940,8 @@ def run_ensemble_evaluation(
     model_counts = {}
     for correlations in all_correlations:
         for model, corr in correlations.items():
+            if allowed_models and model not in allowed_models:
+                continue
             if model not in model_totals:
                 model_totals[model] = 0.0
                 model_counts[model] = 0
@@ -945,6 +952,10 @@ def run_ensemble_evaluation(
         model: model_totals[model] / model_counts[model]
         for model in model_totals
     }
+
+    if not overall_rankings:
+        print("No models available for ensemble evaluation with the given filter.")
+        return {}
 
     # Show which models are being combined
     sorted_models = sorted(overall_rankings.items(), key=lambda x: x[1], reverse=True)
@@ -957,7 +968,8 @@ def run_ensemble_evaluation(
     ensemble_results = {}
 
     for top_n in top_n_options:
-        ensemble_name = f"ENSEMBLE (top {top_n})"
+        suffix = f" - {label}" if label else ""
+        ensemble_name = f"ENSEMBLE (top {top_n}){suffix}"
         top_model_names = [m.split("/")[-1][:12] for m, _ in sorted_models[:top_n]]
         print(f"{ensemble_name}: {' + '.join(top_model_names)}")
 
@@ -1433,13 +1445,29 @@ def main():
     skirt_corrs = print_expected_comparison(skirt_results, "skirt", EXPECTED_SCORES["skirt"], model_prices)
     all_correlations.append(skirt_corrs)
 
-    # Ensemble evaluation - combine top models
-    ensemble_results = run_ensemble_evaluation(
+    # Ensemble evaluation - embeddings only
+    embedding_models = {m for m, _ in model_ids}
+    embedding_ensemble_results = run_ensemble_evaluation(
         all_results,
         all_correlations,
         EXPECTED_SCORES,
         top_n_options=[2, 3, 5],
+        allowed_models=embedding_models,
+        label="embeddings",
     )
+
+    # Ensemble evaluation - LLM rankings only
+    llm_models = {m for m, _ in LLM_RANKING_MODELS}
+    llm_ensemble_results = run_ensemble_evaluation(
+        all_results,
+        all_correlations,
+        EXPECTED_SCORES,
+        top_n_options=[2, 3],
+        allowed_models=llm_models,
+        label="llms",
+    )
+
+    ensemble_results = {**embedding_ensemble_results, **llm_ensemble_results}
 
     # Final aggregated leaderboard (includes ensembles)
     print_final_leaderboard(all_correlations, model_prices, ensemble_results)

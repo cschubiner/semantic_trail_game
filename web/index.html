@@ -18,11 +18,24 @@
       <!-- Status message area -->
       <div id="status" class="status"></div>
 
+      <!-- Timer display (hidden until first guess) -->
+      <div id="timer-display" class="timer-display hidden">
+        <div class="timer-main">
+          <span id="timer-time" class="timer-time">0:00</span>
+          <span id="timer-tier" class="timer-tier">🧠 Genius</span>
+        </div>
+        <div class="timer-progress-container">
+          <div id="timer-progress" class="timer-progress-bar"></div>
+        </div>
+        <div id="timer-next-tier" class="timer-next-tier">3:00 until Brilliant</div>
+      </div>
+
       <!-- Win banner (hidden by default) -->
       <div id="win-banner" class="win-banner hidden">
         <h2>Congratulations!</h2>
         <p>You found the word: <span id="win-word"></span></p>
-        <p>Guesses: <span id="win-guesses"></span></p>
+        <p>Guesses: <span id="win-guesses"></span> | Time: <span id="win-time"></span></p>
+        <p id="win-tier" class="win-tier"></p>
         <button onclick="resetGame()">Play Again</button>
       </div>
 
@@ -69,7 +82,7 @@
               <th>#</th>
               <th>Word</th>
               <th>Score</th>
-              <th>Similarity</th>
+              <th>LLM</th>
               <th></th>
             </tr>
           </thead>

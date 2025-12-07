@@ -92,6 +92,58 @@ header h1 {
   color: var(--success-color);
 }
 
+/* Timer display */
+.timer-display {
+  background: var(--card-bg);
+  border: 1px solid var(--accent-color);
+  border-radius: 10px;
+  padding: 15px 20px;
+  margin-bottom: 15px;
+  text-align: center;
+}
+
+.timer-main {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 10px;
+}
+
+.timer-time {
+  font-size: 2rem;
+  font-weight: bold;
+  font-family: 'Courier New', monospace;
+  color: var(--text-color);
+}
+
+.timer-tier {
+  font-size: 1.4rem;
+  font-weight: bold;
+  transition: color 0.3s ease;
+}
+
+.timer-progress-container {
+  width: 100%;
+  height: 8px;
+  background: var(--accent-color);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.timer-progress-bar {
+  height: 100%;
+  width: 0%;
+  border-radius: 4px;
+  transition: width 0.1s linear, background-color 0.3s ease;
+}
+
+.timer-next-tier {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
 /* Win banner */
 .win-banner {
   text-align: center;
@@ -129,6 +181,12 @@ header h1 {
 
 .win-banner button:hover {
   background: #33dd77;
+}
+
+.win-tier {
+  font-size: 1.5rem;
+  font-weight: bold;
+  margin: 10px 0;
 }
 
 @keyframes pulse {
@@ -342,6 +400,26 @@ header h1 {
   font-size: 0.9rem;
 }
 
+.guess-table .llm-cell {
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.llm-rank {
+  color: var(--warm-color);
+  font-weight: bold;
+}
+
+.llm-score {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-left: 4px;
+}
+
+.llm-pending {
+  color: var(--text-muted);
+}
+
 /* Score bar */
 .score-bar {
   width: 100px;
@@ -478,5 +556,18 @@ footer a:hover {
   .bucket-legend {
     flex-direction: column;
     align-items: center;
+  }
+
+  .timer-main {
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .timer-time {
+    font-size: 1.6rem;
+  }
+
+  .timer-tier {
+    font-size: 1.2rem;
   }
 }

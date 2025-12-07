@@ -14,6 +14,16 @@ const ENSEMBLE_MODELS = [
 ];
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/embeddings';
+const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
+
+// LLM for re-ranking
+const RERANK_MODEL = 'google/gemini-2.5-flash-preview';
+
+// Cost protection: $1/hour budget
+const HOURLY_BUDGET_CENTS = 100; // $1.00 in cents
+// Gemini 2.5 Flash pricing (approximate): $0.15/1M input, $0.60/1M output
+// Estimate ~500 tokens per rerank call, ~$0.0003 per call = 0.03 cents
+const ESTIMATED_COST_PER_RERANK_CENTS = 0.05; // Conservative estimate
 
 // Similarity to score mapping (same as Python version)
 const MIN_SIM = 0.20;
@@ -60,6 +70,23 @@ interface HintResponse {
 interface RevealResponse {
   word: string;
   message: string;
+}
+
+interface RerankRequest {
+  guesses: Array<{
+    word: string;
+    score: number;
+  }>;
+}
+
+interface RerankResponse {
+  rankings: Array<{
+    word: string;
+    rank: number;
+    llmScore?: number;
+  }>;
+  rateLimited?: boolean;
+  message?: string;
 }
 
 /**
@@ -271,6 +298,119 @@ async function getEnsembleSimilarity(
 }
 
 /**
+ * Get the current hour key for cost tracking (YYYY-MM-DD-HH in UTC)
+ */
+function getHourKey(): string {
+  const now = new Date();
+  const year = now.getUTCFullYear();
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  const hour = String(now.getUTCHours()).padStart(2, '0');
+  return `cost:${year}-${month}-${day}-${hour}`;
+}
+
+/**
+ * Check if we're under budget and increment cost if so
+ * Returns true if the request can proceed, false if rate limited
+ */
+async function checkAndIncrementCost(env: Env): Promise<boolean> {
+  const hourKey = getHourKey();
+
+  // Get current spend for this hour
+  const currentSpendStr = await env.EMBED_CACHE.get(hourKey);
+  const currentSpend = currentSpendStr ? parseFloat(currentSpendStr) : 0;
+
+  // Check if we'd exceed budget
+  if (currentSpend + ESTIMATED_COST_PER_RERANK_CENTS > HOURLY_BUDGET_CENTS) {
+    console.log(`Rate limited: current spend ${currentSpend} cents, budget ${HOURLY_BUDGET_CENTS} cents`);
+    return false;
+  }
+
+  // Increment and save (with 2 hour TTL so old keys expire)
+  const newSpend = currentSpend + ESTIMATED_COST_PER_RERANK_CENTS;
+  await env.EMBED_CACHE.put(hourKey, newSpend.toString(), { expirationTtl: 7200 });
+
+  return true;
+}
+
+/**
+ * Call LLM to re-rank guesses based on semantic similarity to secret word
+ */
+async function rerankWithLLM(
+  guesses: Array<{ word: string; score: number }>,
+  secret: string,
+  env: Env
+): Promise<Array<{ word: string; rank: number; llmScore?: number }>> {
+  // Build the prompt for ranking
+  const wordList = guesses.map(g => g.word).join(', ');
+
+  const prompt = `You are helping with a word guessing game. The secret word is "${secret}".
+
+Given these guessed words, rank them from most to least semantically similar to "${secret}".
+Consider meaning, context, associations, and conceptual relationships.
+
+Words to rank: ${wordList}
+
+Respond with ONLY a JSON array of objects with "word" and "score" (1-100, higher = more similar).
+Example format: [{"word": "example", "score": 85}, ...]
+
+Be precise and consistent. Output valid JSON only, no explanation.`;
+
+  const response = await fetch(OPENROUTER_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: RERANK_MODEL,
+      messages: [
+        { role: 'user', content: prompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 1000,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`LLM API error: ${response.status} - ${text}`);
+  }
+
+  const data = await response.json() as {
+    choices: Array<{ message: { content: string } }>;
+  };
+
+  const content = data.choices[0]?.message?.content || '';
+
+  // Parse JSON from response (handle potential markdown code blocks)
+  let jsonStr = content.trim();
+  if (jsonStr.startsWith('```')) {
+    jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+  }
+
+  try {
+    const rankings = JSON.parse(jsonStr) as Array<{ word: string; score: number }>;
+
+    // Sort by score descending and assign ranks
+    rankings.sort((a, b) => b.score - a.score);
+
+    return rankings.map((r, idx) => ({
+      word: r.word.toLowerCase(),
+      rank: idx + 1,
+      llmScore: r.score,
+    }));
+  } catch (parseError) {
+    console.error('Failed to parse LLM response:', content);
+    // Fallback: return original order
+    return guesses.map((g, idx) => ({
+      word: g.word,
+      rank: idx + 1,
+    }));
+  }
+}
+
+/**
  * Handle POST /score requests
  */
 async function handleScore(request: Request, env: Env): Promise<Response> {
@@ -374,6 +514,67 @@ async function handleReveal(request: Request, env: Env): Promise<Response> {
 }
 
 /**
+ * Handle POST /rerank - Re-rank top guesses using LLM
+ */
+async function handleRerank(request: Request, env: Env): Promise<Response> {
+  // Parse request body
+  let body: RerankRequest;
+  try {
+    body = await request.json() as RerankRequest;
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' } as ErrorResponse, 400, request, env);
+  }
+
+  // Validate guesses
+  if (!body.guesses || !Array.isArray(body.guesses) || body.guesses.length === 0) {
+    return jsonResponse({ error: 'Missing or empty guesses array' } as ErrorResponse, 400, request, env);
+  }
+
+  // Limit to top 20
+  const topGuesses = body.guesses.slice(0, 20);
+
+  // Check budget before making LLM call
+  const canProceed = await checkAndIncrementCost(env);
+  if (!canProceed) {
+    // Return rate limited response - frontend should use embedding scores
+    const response: RerankResponse = {
+      rankings: topGuesses.map((g, idx) => ({
+        word: g.word,
+        rank: idx + 1,
+      })),
+      rateLimited: true,
+      message: 'LLM rate limited due to hourly budget. Using embedding scores.',
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+
+  // Get secret word for LLM ranking
+  const secret = await getSecretWord(env.SECRET_SALT);
+
+  try {
+    const rankings = await rerankWithLLM(topGuesses, secret, env);
+
+    const response: RerankResponse = {
+      rankings,
+      rateLimited: false,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  } catch (error) {
+    console.error('Error in LLM rerank:', error);
+    // On error, return original order without failing
+    const response: RerankResponse = {
+      rankings: topGuesses.map((g, idx) => ({
+        word: g.word,
+        rank: idx + 1,
+      })),
+      rateLimited: false,
+      message: `LLM error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+}
+
+/**
  * Create JSON response with CORS headers
  */
 function jsonResponse(
@@ -435,6 +636,11 @@ export default {
     // Reveal endpoint
     if (url.pathname === '/reveal' && request.method === 'GET') {
       return handleReveal(request, env);
+    }
+
+    // Rerank endpoint (LLM-based re-ranking of top guesses)
+    if (url.pathname === '/rerank' && request.method === 'POST') {
+      return handleRerank(request, env);
     }
 
     // Health check endpoint
