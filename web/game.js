@@ -17,6 +17,7 @@ const DEMO_MODE = false;
 
 // Game state
 let guesses = []; // Array of { word, similarity, score, bucket, isCorrect, llmRank?, llmScore? }
+let recentAttempts = []; // Track last 10 attempts (including duplicates) for display
 let gameWon = false;
 let guessQueue = []; // Queue of words currently being processed
 let currentGameIndex = 0; // 0 = word of the day, 1+ = random games
@@ -215,6 +216,7 @@ function resetTimer() {
 function saveGameState() {
   const state = {
     guesses,
+    recentAttempts,
     gameWon,
     timerStarted,
     timerStartTime,
@@ -241,6 +243,7 @@ function loadGameState() {
 
     const state = JSON.parse(saved);
     guesses = state.guesses || [];
+    recentAttempts = state.recentAttempts || [];
     gameWon = state.gameWon || false;
     timerStarted = state.timerStarted || false;
     timerStartTime = state.timerStartTime;
@@ -493,6 +496,17 @@ async function performSmartRerank(batch, batchHash) {
 // ============================================================
 
 /**
+ * Add an attempt to the recent attempts list (keeps last 10)
+ */
+function addRecentAttempt(word, score, isCorrect = false) {
+  recentAttempts.push({ word, score, isCorrect, timestamp: Date.now() });
+  // Keep only last 10
+  if (recentAttempts.length > 10) {
+    recentAttempts = recentAttempts.slice(-10);
+  }
+}
+
+/**
  * Submit a guess to the backend (processes in parallel)
  */
 async function submitGuess(word = null) {
@@ -513,7 +527,13 @@ async function submitGuess(word = null) {
   }
 
   // Check if already guessed or already processing
-  if (guesses.some(g => g.word === guess) || guessQueue.includes(guess)) {
+  const existingGuess = guesses.find(g => g.word === guess);
+  if (existingGuess || guessQueue.includes(guess)) {
+    // Still add to recent attempts so user sees what they typed
+    if (existingGuess) {
+      addRecentAttempt(existingGuess.word, existingGuess.score, existingGuess.isCorrect);
+      renderRecentGuesses();
+    }
     showStatus(`Already guessed "${guess}"`, 'info');
     return;
   }
@@ -562,7 +582,7 @@ async function processGuess(guess) {
 
     // Add to guesses (compute bucket on frontend)
     // HYBRID STATE: track embedding score separately as permanent anchor
-    guesses.push({
+    const newGuess = {
       word: result.guess,
       similarity: result.similarity,
       score: result.score,              // Effective score (starts as embedding, gets blended)
@@ -571,7 +591,11 @@ async function processGuess(guess) {
       rerankGroupId: 0,                 // 0 = never sorted by LLM
       bucket: getBucket(result.score),
       isCorrect: result.isCorrect || false,
-    });
+    };
+    guesses.push(newGuess);
+
+    // Also add to recent attempts for display
+    addRecentAttempt(newGuess.word, newGuess.score, newGuess.isCorrect);
 
     // Track last guess time and start re-rank interval
     lastGuessTime = Date.now();
@@ -718,6 +742,7 @@ function handleWin(word) {
  */
 function resetGame() {
   guesses = [];
+  recentAttempts = [];
   gameWon = false;
   guessQueue = [];
   winBanner.classList.add('hidden');
@@ -743,6 +768,7 @@ function resetGame() {
 function newRandomGame() {
   currentGameIndex++;
   guesses = [];
+  recentAttempts = [];
   gameWon = false;
   guessQueue = [];
   winBanner.classList.add('hidden');
@@ -912,21 +938,20 @@ function showHint(message) {
 // ============================================================
 
 /**
- * Render the 5 most recent guesses
+ * Render the 10 most recent attempts (includes duplicates to show what was tried)
  */
 function renderRecentGuesses() {
-  if (guesses.length === 0) {
+  if (recentAttempts.length === 0) {
     recentGuesses.classList.add('hidden');
     return;
   }
 
   recentGuesses.classList.remove('hidden');
 
-  // Get last 5 guesses (most recent first)
-  const recent = guesses.slice(-5).reverse();
+  // Get recent attempts (most recent first)
+  const recent = [...recentAttempts].reverse();
 
   recentList.innerHTML = recent.map(g => {
-    // g.score is now the blended effective score
     const score = Math.round(g.score);
     const bucketClass = getBucketClass(score, g.isCorrect);
     const isCorrect = g.isCorrect ? ' correct' : '';

@@ -289,27 +289,25 @@ async function getEmbedding(
 }
 
 /**
- * Get ensemble similarity between two words
+ * Get similarity using racing - returns result from whichever model responds first
+ * Both models are called in parallel, first to complete wins
  */
-async function getEnsembleSimilarity(
+async function getRacedSimilarity(
   word1: string,
   word2: string,
   env: Env
 ): Promise<number> {
-  const similarities: number[] = [];
-
-  for (const model of ENSEMBLE_MODELS) {
+  // Create a promise for each model that fetches both embeddings and computes similarity
+  const modelPromises = ENSEMBLE_MODELS.map(async (model) => {
     const [emb1, emb2] = await Promise.all([
       getEmbedding(word1, model, env),
       getEmbedding(word2, model, env),
     ]);
+    return cosineSimilarity(emb1, emb2);
+  });
 
-    const sim = cosineSimilarity(emb1, emb2);
-    similarities.push(sim);
-  }
-
-  // Average similarities
-  return similarities.reduce((a, b) => a + b, 0) / similarities.length;
+  // Race all models - first to respond wins
+  return Promise.race(modelPromises);
 }
 
 /**
@@ -460,7 +458,7 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
 
   // Get ensemble similarity
   try {
-    const similarity = await getEnsembleSimilarity(guess, secret, env);
+    const similarity = await getRacedSimilarity(guess, secret, env);
     const score = similarityToScore(similarity);
 
     const response: ScoreResponse = {
