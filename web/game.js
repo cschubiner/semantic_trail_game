@@ -64,6 +64,7 @@ const winGuesses = document.getElementById('win-guesses');
 const guessTable = document.getElementById('guess-table');
 const hintLetterBtn = document.getElementById('hint-letter-btn');
 const hintLengthBtn = document.getElementById('hint-length-btn');
+const hintLLMBtn = document.getElementById('hint-llm-btn');
 const revealBtn = document.getElementById('reveal-btn');
 const hintDisplay = document.getElementById('hint-display');
 const recentGuesses = document.getElementById('recent-guesses');
@@ -814,6 +815,75 @@ async function revealWord() {
 }
 
 /**
+ * Request an LLM-generated hint based on top guesses (2 minute penalty)
+ */
+async function getLLMHint() {
+  if (gameWon) {
+    showStatus('Game already won!', 'info');
+    return;
+  }
+
+  if (guesses.length < 1) {
+    showStatus('Make at least one guess first!', 'info');
+    return;
+  }
+
+  // Start timer if not started (penalty still applies)
+  if (!timerStarted) {
+    startTimer();
+  }
+
+  // Add 2 minute (120 second) penalty for LLM hint
+  addTimerPenalty(120);
+
+  if (DEMO_MODE) {
+    showHint('Demo hint: Think about vast, blue depths...');
+    return;
+  }
+
+  // Get top 5 guesses sorted by score
+  const topGuesses = [...guesses]
+    .filter(g => !g.isCorrect)
+    .sort((a, b) => {
+      const scoreA = a.llmScore ?? a.score;
+      const scoreB = b.llmScore ?? b.score;
+      return scoreB - scoreA;
+    })
+    .slice(0, 5)
+    .map(g => ({ word: g.word, score: g.llmScore ?? g.score }));
+
+  try {
+    hintLLMBtn.disabled = true;
+    showStatus('Getting hint from AI...', 'info');
+
+    const response = await fetch(`${API_BASE}/llm-hint`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topGuesses, game: currentGameIndex }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to get LLM hint');
+    }
+
+    const data = await response.json();
+
+    if (data.rateLimited) {
+      showStatus('LLM hint rate limited, try again later', 'info');
+    } else {
+      showHint(data.hint);
+      showStatus('', '');
+    }
+  } catch (error) {
+    console.error('Error getting LLM hint:', error);
+    showStatus(`Failed to get LLM hint: ${error.message}`, 'error');
+  } finally {
+    hintLLMBtn.disabled = false;
+  }
+}
+
+/**
  * Display a hint message
  */
 function showHint(message) {
@@ -1152,6 +1222,7 @@ micBtn.addEventListener('click', startMicGuess);
 // Hint and reveal button clicks
 hintLetterBtn.addEventListener('click', () => getHint('letter'));
 hintLengthBtn.addEventListener('click', () => getHint('length'));
+hintLLMBtn.addEventListener('click', getLLMHint);
 revealBtn.addEventListener('click', revealWord);
 
 // Initialize on page load

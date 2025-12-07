@@ -19,11 +19,17 @@ const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
 // LLM for re-ranking
 const RERANK_MODEL = 'google/gemini-2.5-flash';
 
-// Cost protection: $1/hour budget
-const HOURLY_BUDGET_CENTS = 100; // $1.00 in cents
+// LLM for hints
+const HINT_MODEL = 'anthropic/claude-sonnet-4.5';
+
+// Cost protection: $2/hour budget
+const HOURLY_BUDGET_CENTS = 200; // $2.00 in cents
 // Gemini 2.5 Flash pricing (approximate): $0.15/1M input, $0.60/1M output
 // Estimate ~500 tokens per rerank call, ~$0.0003 per call = 0.03 cents
 const ESTIMATED_COST_PER_RERANK_CENTS = 0.05; // Conservative estimate
+// Claude Sonnet 4.5 pricing: ~$3/1M input, $15/1M output
+// Estimate ~300 tokens per hint call = ~0.5 cents
+const ESTIMATED_COST_PER_HINT_CENTS = 0.5;
 
 // Similarity to score mapping (same as Python version)
 const MIN_SIM = 0.20;
@@ -87,6 +93,16 @@ interface RerankResponse {
   }>;
   rateLimited?: boolean;
   message?: string;
+}
+
+interface LLMHintRequest {
+  topGuesses: Array<{ word: string; score: number }>;
+  game?: number;
+}
+
+interface LLMHintResponse {
+  hint: string;
+  rateLimited?: boolean;
 }
 
 /**
@@ -304,7 +320,7 @@ function getHourKey(): string {
  * Check if we're under budget and increment cost if so
  * Returns true if the request can proceed, false if rate limited
  */
-async function checkAndIncrementCost(env: Env): Promise<boolean> {
+async function checkAndIncrementCost(env: Env, costCents: number = ESTIMATED_COST_PER_RERANK_CENTS): Promise<boolean> {
   const hourKey = getHourKey();
 
   // Get current spend for this hour
@@ -312,13 +328,13 @@ async function checkAndIncrementCost(env: Env): Promise<boolean> {
   const currentSpend = currentSpendStr ? parseFloat(currentSpendStr) : 0;
 
   // Check if we'd exceed budget
-  if (currentSpend + ESTIMATED_COST_PER_RERANK_CENTS > HOURLY_BUDGET_CENTS) {
+  if (currentSpend + costCents > HOURLY_BUDGET_CENTS) {
     console.log(`Rate limited: current spend ${currentSpend} cents, budget ${HOURLY_BUDGET_CENTS} cents`);
     return false;
   }
 
   // Increment and save (with 2 hour TTL so old keys expire)
-  const newSpend = currentSpend + ESTIMATED_COST_PER_RERANK_CENTS;
+  const newSpend = currentSpend + costCents;
   await env.EMBED_CACHE.put(hourKey, newSpend.toString(), { expirationTtl: 7200 });
 
   return true;
@@ -500,6 +516,103 @@ async function handleReveal(request: Request, env: Env): Promise<Response> {
 }
 
 /**
+ * Handle POST /llm-hint - Get a vague hint from Claude based on top guesses
+ */
+async function handleLLMHint(request: Request, env: Env): Promise<Response> {
+  // Parse request body
+  let body: LLMHintRequest;
+  try {
+    body = await request.json() as LLMHintRequest;
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' } as ErrorResponse, 400, request, env);
+  }
+
+  // Validate
+  if (!body.topGuesses || !Array.isArray(body.topGuesses) || body.topGuesses.length === 0) {
+    return jsonResponse({ error: 'Missing or empty topGuesses array' } as ErrorResponse, 400, request, env);
+  }
+
+  // Get game index
+  const gameIndex = body.game ?? 0;
+
+  // Check budget before making LLM call
+  const canProceed = await checkAndIncrementCost(env, ESTIMATED_COST_PER_HINT_CENTS);
+  if (!canProceed) {
+    const response: LLMHintResponse = {
+      hint: 'Hint unavailable (rate limited)',
+      rateLimited: true,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+
+  // Get secret word
+  const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
+
+  // Build the prompt
+  const topWords = body.topGuesses.slice(0, 5).map(g => g.word).join(', ');
+
+  const prompt = `You are helping with a word guessing game. The secret word is "${secret}".
+
+The player's top guesses so far are: ${topWords}
+
+Give them ONE extremely vague hint to nudge them in the right direction. The hint must be:
+- Very general and indirect (NOT obvious)
+- One short sentence only
+- Do NOT use the secret word or any close synonyms
+- Do NOT say "think about X" or "consider Y"
+- Be cryptic but fair
+
+Example good hints for "ocean": "Vast and blue, sailors know it well." or "Where waves meet the shore."
+Example bad hints: "It's a large body of water" (too obvious) or "Think about the sea" (too direct)
+
+Your hint:`;
+
+  try {
+    const response = await fetch(OPENROUTER_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: HINT_MODEL,
+        messages: [
+          { role: 'user', content: prompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 100,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`LLM API error: ${response.status} - ${text}`);
+    }
+
+    const data = await response.json() as {
+      choices: Array<{ message: { content: string } }>;
+    };
+
+    const hint = data.choices[0]?.message?.content?.trim() || 'No hint available';
+
+    const hintResponse: LLMHintResponse = {
+      hint,
+      rateLimited: false,
+    };
+    return jsonResponse(hintResponse as unknown as ScoreResponse, 200, request, env);
+
+  } catch (error) {
+    console.error('Error in LLM hint:', error);
+    return jsonResponse(
+      { error: `LLM hint error: ${error instanceof Error ? error.message : 'Unknown error'}` },
+      500,
+      request,
+      env
+    );
+  }
+}
+
+/**
  * Handle POST /rerank - Re-rank top guesses using LLM
  */
 async function handleRerank(request: Request, env: Env): Promise<Response> {
@@ -627,6 +740,11 @@ export default {
     // Rerank endpoint (LLM-based re-ranking of top guesses)
     if (url.pathname === '/rerank' && request.method === 'POST') {
       return handleRerank(request, env);
+    }
+
+    // LLM hint endpoint
+    if (url.pathname === '/llm-hint' && request.method === 'POST') {
+      return handleLLMHint(request, env);
     }
 
     // Health check endpoint

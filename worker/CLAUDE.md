@@ -15,13 +15,15 @@ The worker is deployed to: https://semantic-trail-backend.cschubiner.workers.dev
 
 - **Cloudflare Worker** with KV storage for embedding cache
 - **Ensemble embeddings**: google/gemini-embedding-001 + thenlper/gte-base
-- **LLM re-ranking**: google/gemini-2.5-flash (with $1/hour budget protection)
+- **LLM re-ranking**: google/gemini-2.5-flash (with $2/hour budget protection)
+- **LLM hints**: anthropic/claude-sonnet-4.5 (shares same $2/hour budget)
 
 ## API Endpoints
 
 - `POST /score` - Score a guess (accepts `game` param for multiple games per day)
-- `POST /rerank` - LLM re-ranking of top guesses
-- `GET /hint?type=letter|length&game=N` - Get hints
+- `POST /rerank` - LLM re-ranking of top guesses (Gemini 2.5 Flash)
+- `POST /llm-hint` - Get a vague hint from Claude based on top guesses (Claude Sonnet 4.5)
+- `GET /hint?type=letter|length&game=N` - Get hints (first letter or word length)
 - `GET /reveal?game=N` - Reveal the secret word
 - `GET /health` - Health check
 
