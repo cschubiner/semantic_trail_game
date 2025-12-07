@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Semantle - Word Guessing Game</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>SEMANTLE</h1>
+      <p class="subtitle">Find the secret word using semantic similarity!</p>
+      <p class="ensemble-info">Ensemble: text-embedding-3-large + gte-large</p>
+    </header>
+
+    <main>
+      <!-- Status message area -->
+      <div id="status" class="status"></div>
+
+      <!-- Win banner (hidden by default) -->
+      <div id="win-banner" class="win-banner hidden">
+        <h2>Congratulations!</h2>
+        <p>You found the word: <span id="win-word"></span></p>
+        <p>Guesses: <span id="win-guesses"></span></p>
+        <button onclick="resetGame()">Play Again</button>
+      </div>
+
+      <!-- Input area -->
+      <div class="input-area">
+        <input
+          type="text"
+          id="guess-input"
+          placeholder="Type your guess..."
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+        />
+        <button id="guess-btn" onclick="submitGuess()">Guess</button>
+        <button id="mic-btn" title="Voice input">
+          <span class="mic-icon">&#x1F399;</span>
+        </button>
+      </div>
+
+      <!-- Mic status -->
+      <div id="mic-status" class="mic-status hidden">Listening...</div>
+
+      <!-- Guess history table -->
+      <div class="guess-table-container">
+        <table id="guess-table" class="guess-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Word</th>
+              <th>Score</th>
+              <th>Similarity</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="guess-tbody">
+            <!-- Guesses will be inserted here -->
+          </tbody>
+        </table>
+        <p id="no-guesses" class="no-guesses">No guesses yet. Start typing!</p>
+      </div>
+
+      <!-- Help/commands -->
+      <div class="help-section">
+        <p><strong>How to play:</strong> Guess a word. You'll see a score (0-100) based on semantic similarity.</p>
+        <p>Higher scores mean you're closer to the secret word!</p>
+        <div class="bucket-legend">
+          <span class="bucket burning">BURNING (95+)</span>
+          <span class="bucket hot">Hot (80-94)</span>
+          <span class="bucket warm">Warm (60-79)</span>
+          <span class="bucket tepid">Tepid (40-59)</span>
+          <span class="bucket cold">Cold (20-39)</span>
+          <span class="bucket freezing">Freezing (0-19)</span>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <p>Powered by <a href="https://openrouter.ai/" target="_blank">OpenRouter</a> embeddings</p>
+    </footer>
+  </div>
+
+  <script src="game.js"></script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+name = "semantle-backend"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# KV namespace for embedding cache
+# After running: wrangler kv:namespace create EMBED_CACHE
+# Replace the id below with the actual ID from the output
+[[kv_namespaces]]
+binding = "EMBED_CACHE"
+id = "YOUR_KV_NAMESPACE_ID_HERE"
+
+# Environment variables (non-secret)
+[vars]
+SECRET_SALT = "change-this-to-a-random-string"
+
+# Secrets (set via `wrangler secret put OPENROUTER_API_KEY`):
+# - OPENROUTER_API_KEY
+
+# CORS settings for the frontend
+# The frontend will be hosted on GitHub Pages or similar

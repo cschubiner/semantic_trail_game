@@ -1,0 +1,427 @@
+/* Semantle Web Game Styles */
+
+:root {
+  --bg-color: #1a1a2e;
+  --card-bg: #16213e;
+  --text-color: #eee;
+  --text-muted: #888;
+  --accent-color: #0f3460;
+  --burning-color: #ff4444;
+  --hot-color: #ff8844;
+  --warm-color: #ffcc00;
+  --tepid-color: #88aa44;
+  --cold-color: #44aaff;
+  --freezing-color: #8888ff;
+  --success-color: #44ff88;
+  --error-color: #ff4444;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-color);
+  min-height: 100vh;
+  line-height: 1.6;
+}
+
+.container {
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+/* Header */
+header {
+  text-align: center;
+  margin-bottom: 30px;
+  padding: 20px;
+  background: var(--card-bg);
+  border-radius: 12px;
+  border: 1px solid var(--accent-color);
+}
+
+header h1 {
+  font-size: 2.5rem;
+  letter-spacing: 0.2em;
+  margin-bottom: 10px;
+  background: linear-gradient(135deg, var(--warm-color), var(--hot-color));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  font-size: 1.1rem;
+}
+
+.ensemble-info {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-top: 8px;
+  font-style: italic;
+}
+
+/* Status message */
+.status {
+  text-align: center;
+  padding: 10px;
+  margin-bottom: 15px;
+  border-radius: 8px;
+  min-height: 40px;
+}
+
+.status.error {
+  background: rgba(255, 68, 68, 0.2);
+  color: var(--error-color);
+}
+
+.status.info {
+  background: rgba(68, 170, 255, 0.2);
+  color: var(--cold-color);
+}
+
+.status.success {
+  background: rgba(68, 255, 136, 0.2);
+  color: var(--success-color);
+}
+
+/* Win banner */
+.win-banner {
+  text-align: center;
+  padding: 30px;
+  margin-bottom: 20px;
+  background: linear-gradient(135deg, rgba(68, 255, 136, 0.2), rgba(255, 204, 0, 0.2));
+  border: 2px solid var(--success-color);
+  border-radius: 12px;
+  animation: pulse 2s infinite;
+}
+
+.win-banner h2 {
+  font-size: 1.8rem;
+  color: var(--success-color);
+  margin-bottom: 10px;
+}
+
+.win-banner #win-word {
+  font-weight: bold;
+  text-transform: uppercase;
+  font-size: 1.3rem;
+}
+
+.win-banner button {
+  margin-top: 15px;
+  padding: 12px 30px;
+  font-size: 1.1rem;
+  background: var(--success-color);
+  color: var(--bg-color);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.win-banner button:hover {
+  background: #33dd77;
+}
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.02); }
+}
+
+/* Hidden utility class */
+.hidden {
+  display: none !important;
+}
+
+/* Input area */
+.input-area {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+#guess-input {
+  flex: 1;
+  padding: 15px 20px;
+  font-size: 1.1rem;
+  background: var(--card-bg);
+  border: 2px solid var(--accent-color);
+  border-radius: 8px;
+  color: var(--text-color);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+#guess-input:focus {
+  border-color: var(--warm-color);
+}
+
+#guess-input::placeholder {
+  color: var(--text-muted);
+}
+
+#guess-btn {
+  padding: 15px 25px;
+  font-size: 1.1rem;
+  background: var(--accent-color);
+  border: 2px solid var(--accent-color);
+  border-radius: 8px;
+  color: var(--text-color);
+  cursor: pointer;
+  font-weight: bold;
+  transition: all 0.2s;
+}
+
+#guess-btn:hover {
+  background: #1a4a70;
+  border-color: var(--warm-color);
+}
+
+#guess-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+#mic-btn {
+  padding: 15px 18px;
+  font-size: 1.1rem;
+  background: var(--card-bg);
+  border: 2px solid var(--accent-color);
+  border-radius: 8px;
+  color: var(--text-color);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+#mic-btn:hover {
+  background: var(--accent-color);
+  border-color: var(--hot-color);
+}
+
+#mic-btn.listening {
+  background: var(--hot-color);
+  border-color: var(--hot-color);
+  animation: mic-pulse 1s infinite;
+}
+
+.mic-icon {
+  font-size: 1.2rem;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Mic status */
+.mic-status {
+  text-align: center;
+  padding: 8px;
+  margin-bottom: 15px;
+  color: var(--hot-color);
+  font-style: italic;
+}
+
+/* Guess table */
+.guess-table-container {
+  background: var(--card-bg);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+  border: 1px solid var(--accent-color);
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+.guess-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.guess-table th,
+.guess-table td {
+  padding: 12px 10px;
+  text-align: left;
+}
+
+.guess-table th {
+  color: var(--text-muted);
+  font-weight: normal;
+  font-size: 0.9rem;
+  border-bottom: 1px solid var(--accent-color);
+}
+
+.guess-table tbody tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background-color 0.2s;
+}
+
+.guess-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.guess-table tbody tr.latest {
+  background: rgba(255, 204, 0, 0.1);
+}
+
+.guess-table .word-cell {
+  font-weight: bold;
+  text-transform: lowercase;
+}
+
+.guess-table .score-cell {
+  font-weight: bold;
+  font-size: 1.1rem;
+}
+
+.guess-table .similarity-cell {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+/* Score bar */
+.score-bar {
+  width: 100px;
+  height: 8px;
+  background: var(--accent-color);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.score-bar-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+/* Bucket colors */
+.bucket-cell {
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.bucket-burning { color: var(--burning-color); }
+.bucket-hot { color: var(--hot-color); }
+.bucket-warm { color: var(--warm-color); }
+.bucket-tepid { color: var(--tepid-color); }
+.bucket-cold { color: var(--cold-color); }
+.bucket-freezing { color: var(--freezing-color); }
+.bucket-correct { color: var(--success-color); font-weight: bold; }
+
+.bar-burning { background: var(--burning-color); }
+.bar-hot { background: var(--hot-color); }
+.bar-warm { background: var(--warm-color); }
+.bar-tepid { background: var(--tepid-color); }
+.bar-cold { background: var(--cold-color); }
+.bar-freezing { background: var(--freezing-color); }
+.bar-correct { background: var(--success-color); }
+
+.no-guesses {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 30px;
+}
+
+/* Help section */
+.help-section {
+  background: var(--card-bg);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+  border: 1px solid var(--accent-color);
+}
+
+.help-section p {
+  margin-bottom: 10px;
+  color: var(--text-muted);
+}
+
+.help-section p:last-of-type {
+  margin-bottom: 15px;
+}
+
+.bucket-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+
+.bucket-legend .bucket {
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 0.8rem;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.bucket-legend .burning { color: var(--burning-color); }
+.bucket-legend .hot { color: var(--hot-color); }
+.bucket-legend .warm { color: var(--warm-color); }
+.bucket-legend .tepid { color: var(--tepid-color); }
+.bucket-legend .cold { color: var(--cold-color); }
+.bucket-legend .freezing { color: var(--freezing-color); }
+
+/* Footer */
+footer {
+  text-align: center;
+  padding: 20px;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+footer a {
+  color: var(--cold-color);
+  text-decoration: none;
+}
+
+footer a:hover {
+  text-decoration: underline;
+}
+
+/* Responsive */
+@media (max-width: 600px) {
+  .container {
+    padding: 10px;
+  }
+
+  header h1 {
+    font-size: 2rem;
+  }
+
+  .input-area {
+    flex-wrap: wrap;
+  }
+
+  #guess-input {
+    width: 100%;
+    flex: none;
+  }
+
+  #guess-btn,
+  #mic-btn {
+    flex: 1;
+  }
+
+  .guess-table th,
+  .guess-table td {
+    padding: 8px 5px;
+    font-size: 0.9rem;
+  }
+
+  .score-bar {
+    width: 60px;
+  }
+
+  .bucket-legend {
+    flex-direction: column;
+    align-items: center;
+  }
+}
