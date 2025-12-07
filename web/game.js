@@ -66,6 +66,8 @@ const hintLetterBtn = document.getElementById('hint-letter-btn');
 const hintLengthBtn = document.getElementById('hint-length-btn');
 const revealBtn = document.getElementById('reveal-btn');
 const hintDisplay = document.getElementById('hint-display');
+const recentGuesses = document.getElementById('recent-guesses');
+const recentList = document.getElementById('recent-list');
 const timerDisplay = document.getElementById('timer-display');
 const timerTime = document.getElementById('timer-time');
 const timerTier = document.getElementById('timer-tier');
@@ -824,9 +826,40 @@ function showHint(message) {
 // ============================================================
 
 /**
+ * Render the 5 most recent guesses
+ */
+function renderRecentGuesses() {
+  if (guesses.length === 0) {
+    recentGuesses.classList.add('hidden');
+    return;
+  }
+
+  recentGuesses.classList.remove('hidden');
+
+  // Get last 5 guesses (most recent first)
+  const recent = guesses.slice(-5).reverse();
+
+  recentList.innerHTML = recent.map(g => {
+    const score = Math.round(g.llmScore ?? g.score);
+    const bucketClass = getBucketClass(score, g.isCorrect);
+    const isCorrect = g.isCorrect ? ' correct' : '';
+
+    return `
+      <div class="recent-item${isCorrect}">
+        <span class="recent-word">${escapeHtml(g.word)}</span>
+        <span class="recent-score ${bucketClass}">${score}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+/**
  * Render the guesses table
  */
 function renderGuesses() {
+  // Render recent guesses (last 5)
+  renderRecentGuesses();
+
   if (guesses.length === 0) {
     noGuessesEl.classList.remove('hidden');
     guessTable.classList.add('hidden');

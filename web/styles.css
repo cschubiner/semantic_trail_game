@@ -361,6 +361,60 @@ header h1 {
   color: var(--bg-color);
 }
 
+/* Recent guesses */
+.recent-guesses {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 15px;
+  margin-bottom: 15px;
+  background: var(--card-bg);
+  border: 1px solid var(--accent-color);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.recent-label {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.recent-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--accent-color);
+  border-radius: 4px;
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.recent-word {
+  color: var(--text-color);
+  font-weight: 500;
+}
+
+.recent-score {
+  font-weight: bold;
+}
+
+.recent-item.correct {
+  background: rgba(68, 255, 136, 0.2);
+  border: 1px solid var(--success-color);
+}
+
+.recent-item.correct .recent-score {
+  color: var(--success-color);
+}
+
 /* Hint display */
 .hint-display {
   text-align: center;
