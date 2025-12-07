@@ -559,21 +559,51 @@ async function handleLLMHint(request: Request, env: Env): Promise<Response> {
   // Build the prompt
   const topWords = body.topGuesses.slice(0, 5).map(g => g.word).join(', ');
 
-  const prompt = `You are helping with a word guessing game. The secret word is "${secret}".
+  const prompt = `Word guessing game. Secret: "${secret}". Player's guesses: ${topWords}
 
-The player's top guesses so far are: ${topWords}
+Your job: Give ONE cryptic, almost-useless hint that gently redirects them. They're on the wrong track.
 
-Give them ONE extremely vague hint to nudge them in the right direction. The hint must be:
-- Very general and indirect (NOT obvious)
-- One short sentence only
-- Do NOT use the secret word or any close synonyms
-- Do NOT say "think about X" or "consider Y"
-- Be cryptic but fair
+RULES (strict):
+- Maximum 5-7 words
+- Be EXTREMELY vague and abstract
+- Do NOT describe what the word IS or DOES
+- Do NOT use synonyms, rhymes, or category words
+- Do NOT say what it's "like" or "related to"
+- Reference a distant association, mood, or abstract quality only
 
-Example good hints for "ocean": "Vast and blue, sailors know it well." or "Where waves meet the shore."
-Example bad hints: "It's a large body of water" (too obvious) or "Think about the sea" (too direct)
+EXAMPLES (secret word, their guesses -> good hint):
 
-Your hint:`;
+Secret "sing", guesses "ocean, blue, water, wave, sea":
+BAD: "Birds do this" / "Musical expression" (too obvious)
+GOOD: "Less wet, more from within" / "Abandon the depths, find your throat"
+
+Secret "ocean", guesses "music, song, voice, melody, sound":
+BAD: "Large body of water" / "Where fish swim" (too obvious)
+GOOD: "Deeper than any note" / "Scale up from sound to vastness"
+
+Secret "knife", guesses "happy, joy, smile, laugh, love":
+BAD: "Sharp cutting tool" / "Found in kitchens" (too obvious)
+GOOD: "Edges exist beyond emotion" / "Joy has no point—this does"
+
+Secret "dream", guesses "rock, stone, mountain, earth, ground":
+BAD: "What happens when sleeping" (too obvious)
+GOOD: "Softer than any stone" / "Close your eyes to move"
+
+Secret "bridge", guesses "fire, heat, flame, burn, hot":
+BAD: "Connects two places" / "Crosses water" (too obvious)
+GOOD: "Cool the flames, span the gap" / "Not destruction—connection"
+
+Secret "time", guesses "tree, forest, leaf, branch, wood":
+BAD: "Clocks measure it" / "Hours and minutes" (too obvious)
+GOOD: "Rings mark its passage silently" / "What trees count but cannot keep"
+
+Secret "fire", guesses "cold, ice, winter, snow, freeze":
+BAD: "Hot flames" / "Burns things" (too obvious)
+GOOD: "The opposite hungers nearby" / "Melt your assumptions"
+
+Use their guesses to gently redirect. Be poetic and obscure.
+
+Hint:`;
 
   try {
     const response = await fetch(OPENROUTER_CHAT_URL, {

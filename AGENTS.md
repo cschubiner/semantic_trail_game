@@ -5,6 +5,7 @@
   cd worker && npx wrangler deploy
   ```
   (You can also use `npm run deploy`.)
+  Treat “change under worker/” as “deploy immediately.”
 
 - Keep `ALLOWED_ORIGINS` in `worker/wrangler.toml` aligned with the frontend host (e.g., GitHub Pages URL) to avoid CORS issues.
 
