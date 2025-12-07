@@ -18,6 +18,8 @@ const DEMO_MODE = false;
 // Game state
 let guesses = []; // Array of { word, similarity, score, bucket, isCorrect, llmRank?, llmScore? }
 let gameWon = false;
+let isProcessingGuess = false;
+let guessQueue = []; // Queue of words waiting to be submitted
 
 // LLM Re-ranking state
 let rerankInterval = null;
@@ -347,13 +349,17 @@ function resetRerankState() {
 // ============================================================
 
 /**
- * Submit a guess to the backend
+ * Submit a guess to the backend (queues if already processing)
  */
 async function submitGuess(word = null) {
   const guess = (word || guessInput.value).trim().toLowerCase();
 
+  // Clear input immediately so user can keep typing
+  if (!word) {
+    guessInput.value = '';
+  }
+
   if (!guess) {
-    showStatus('Please enter a word', 'error');
     return;
   }
 
@@ -362,16 +368,38 @@ async function submitGuess(word = null) {
     return;
   }
 
-  // Check if already guessed
-  if (guesses.some(g => g.word === guess)) {
+  // Check if already guessed or already in queue
+  if (guesses.some(g => g.word === guess) || guessQueue.includes(guess)) {
     showStatus(`Already guessed "${guess}"`, 'info');
-    guessInput.value = '';
     return;
   }
 
-  // Disable input while processing
-  setInputDisabled(true);
-  showStatus('Thinking...', 'info');
+  // If currently processing, add to queue
+  if (isProcessingGuess) {
+    guessQueue.push(guess);
+    showStatus(`Queued "${guess}" (${guessQueue.length} waiting)...`, 'info');
+    return;
+  }
+
+  // Process this guess
+  await processGuess(guess);
+
+  // Process any queued guesses
+  while (guessQueue.length > 0 && !gameWon) {
+    const nextGuess = guessQueue.shift();
+    // Skip if it was guessed while in queue
+    if (!guesses.some(g => g.word === nextGuess)) {
+      await processGuess(nextGuess);
+    }
+  }
+}
+
+/**
+ * Process a single guess (internal - called by submitGuess)
+ */
+async function processGuess(guess) {
+  isProcessingGuess = true;
+  showStatus(`Thinking... "${guess}"`, 'info');
 
   // Start timer on first guess
   if (!timerStarted) {
@@ -418,23 +446,23 @@ async function submitGuess(word = null) {
     // Check for win
     if (result.isCorrect) {
       handleWin(result.guess);
+      guessQueue = []; // Clear queue on win
     } else {
       // Show word, score, bucket, and rank in status
       const rank = getRank(result.score);
       const bucketLabel = result.bucket || getBucket(result.score);
-      showStatus(`"${result.guess}" → ${result.score}/100 (${bucketLabel}) — Rank #${rank}/${guesses.length}`, 'info');
+      const queueInfo = guessQueue.length > 0 ? ` (${guessQueue.length} queued)` : '';
+      showStatus(`"${result.guess}" → ${result.score}/100 (${bucketLabel}) — Rank #${rank}/${guesses.length}${queueInfo}`, 'info');
     }
 
     // Update UI
     renderGuesses();
-    guessInput.value = '';
 
   } catch (error) {
     console.error('Error submitting guess:', error);
     showStatus(`Error: ${error.message}`, 'error');
   } finally {
-    setInputDisabled(false);
-    guessInput.focus();
+    isProcessingGuess = false;
   }
 }
 
@@ -550,6 +578,8 @@ function handleWin(word) {
 function resetGame() {
   guesses = [];
   gameWon = false;
+  guessQueue = [];
+  isProcessingGuess = false;
   winBanner.classList.add('hidden');
   hintDisplay.classList.add('hidden');
   hintDisplay.textContent = '';

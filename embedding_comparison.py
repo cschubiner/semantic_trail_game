@@ -302,9 +302,12 @@ def save_to_cache(word: str, model: str, embedding: list[float]):
 def get_llm_cache_path(target_word: str, words: tuple[str, ...], model: str) -> Path:
     """Get cache file path for an LLM ranking result."""
     model_safe = model.replace("/", "_")
-    # Create a hash of the words list for the filename
-    words_hash = hash(words) & 0xFFFFFFFF  # Positive 32-bit hash
-    return LLM_CACHE_DIR / model_safe / f"{target_word}_{words_hash:08x}.json"
+    # Deterministic hash of sorted words to keep cache stable across runs
+    import hashlib
+
+    hash_input = target_word + "|" + "|".join(words)
+    words_hash = hashlib.sha256(hash_input.encode("utf-8")).hexdigest()[:16]
+    return LLM_CACHE_DIR / model_safe / f"{target_word}_{words_hash}.json"
 
 
 def load_llm_ranking_from_cache(
@@ -537,28 +540,28 @@ def compare_llm_rankings(
     """
     results = {}
 
-    for model_id, price in llm_models:
+    def run_single(model_id: str, price: float):
         model_short = model_id.split("/")[-1]
-
-        # Check if cached
         cached = load_llm_ranking_from_cache(target_word, words, model_id)
         if cached:
             print(f"  {model_short} (LLM): cached")
-        else:
-            print(f"  {model_short} (LLM): calling API...")
+            return model_id, llm_ranking_to_similarities(cached, words)
 
+        print(f"  {model_short} (LLM): calling API...")
         try:
             ranking = get_llm_word_ranking(words, target_word, model_id, api_key)
             similarities = llm_ranking_to_similarities(ranking, words)
-            results[model_id] = similarities
-
-            # Small delay to avoid rate limits
-            if not cached:
-                time.sleep(0.5)
-
+            return model_id, similarities
         except Exception as e:
             print(f"    Error: {e}")
-            results[model_id] = {}
+            return model_id, {}
+
+    # Run LLM calls in parallel to reduce total latency
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(llm_models))) as executor:
+        futures = [executor.submit(run_single, mid, price) for mid, price in llm_models]
+        for fut in concurrent.futures.as_completed(futures):
+            model_id, sims = fut.result()
+            results[model_id] = sims
 
     return results
 
