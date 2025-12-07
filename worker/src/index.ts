@@ -2,17 +2,13 @@
  * Semantic Trail Backend - Cloudflare Worker
  *
  * Exposes POST /score endpoint for the word guessing game.
- * Uses ensemble embeddings with a weighted average (Gemini + GTE-base).
- * Tries R2 for GTE-base, KV/API for both.
+ * Uses Google Gemini embedding only (no ensemble).
  */
 
 import { WORD_LIST } from './wordlist';
 
-// Ensemble embedding models and weights (must sum to 1.0)
-const ENSEMBLE_MODELS: Array<{ model: string; weight: number }> = [
-  { model: 'google/gemini-embedding-001', weight: 0.7 },
-  { model: 'thenlper/gte-base', weight: 0.3 },
-];
+// Single embedding model (Gemini)
+const EMBEDDING_MODEL = 'google/gemini-embedding-001';
 
 // Stop words that cannot be guessed
 const STOP_WORDS = new Set([
@@ -56,15 +52,15 @@ const ESTIMATED_COST_PER_HINT_CENTS = 0.5;
 // Similarity to score mapping (non-linear)
 // Piecewise similarity->score mapping tuned for numeric words (less generous)
 // Control points are linearly interpolated; adjust to retune.
-// Control points tuned to damp false positives while keeping close matches high
+// Control points tuned for Gemini-only similarities
 const SCORE_POINTS: Array<{ sim: number; score: number }> = [
   { sim: 0.10, score: 0 },
-  { sim: 0.40, score: 5 },
-  { sim: 0.50, score: 20 },
-  { sim: 0.60, score: 45 },
-  { sim: 0.66, score: 65 },
-  { sim: 0.72, score: 95 },
-  { sim: 0.86, score: 100 },
+  { sim: 0.40, score: 10 },
+  { sim: 0.50, score: 25 },
+  { sim: 0.60, score: 50 },
+  { sim: 0.68, score: 75 },
+  { sim: 0.75, score: 95 },
+  { sim: 0.82, score: 100 },
 ];
 
 const EASTERN_FORMATTER = new Intl.DateTimeFormat('en-US', {
@@ -84,11 +80,11 @@ interface Env {
   ALLOWED_ORIGINS?: string;
 }
 
-// R2 Embeddings state (loaded once per worker instance) - only for GTE-base
+// (R2 caches were for GTE-base; kept for future reuse but unused by Gemini-only path)
 let r2EmbeddingsLoaded = false;
 let r2WordIndex: Record<string, number> | null = null;
 let r2EmbeddingsData: Float32Array | null = null;
-const EMBEDDING_DIM = 768; // Both models are 768-dim
+const EMBEDDING_DIM = 768;
 
 interface ScoreRequest {
   guess: string;
@@ -291,21 +287,13 @@ function getCacheKey(word: string, model: string): string {
 }
 
 /**
- * Get embedding from cache or fetch from OpenRouter for a specific model.
- * Uses R2 fast path only for GTE-base; other models use API/KV cache.
+ * Get embedding from cache or fetch from OpenRouter (Gemini only).
  */
 async function getEmbedding(
   word: string,
-  model: string,
   env: Env
 ): Promise<number[]> {
-  // R2 shortcut only for GTE-base
-  if (model === 'thenlper/gte-base') {
-    await loadR2Embeddings(env);
-    const r2 = getR2Embedding(word);
-    if (r2) return r2;
-  }
-
+  const model = EMBEDDING_MODEL;
   const cacheKey = getCacheKey(word, model);
 
   // Try cache first
@@ -391,10 +379,8 @@ async function loadR2Embeddings(env: Env): Promise<boolean> {
 }
 
 /**
- * Get embedding from R2 precomputed data (GTE-base only)
- * Returns null if word not found in R2
- */
-function getR2Embedding(word: string): number[] | null {
+// NOTE: R2 embedding path disabled for Gemini-only mode
+function getR2Embedding(_word: string): number[] | null {
   if (!r2WordIndex || !r2EmbeddingsData) return null;
 
   const wordLower = word.toLowerCase();
@@ -407,35 +393,18 @@ function getR2Embedding(word: string): number[] | null {
 }
 
 /**
- * Get similarity between two words using ensemble embeddings (weighted average).
+ * Get similarity between two words using the Gemini embedding.
  */
 async function getSimilarity(
   word1: string,
   word2: string,
   env: Env
 ): Promise<number> {
-  const sims = await Promise.all(
-    ENSEMBLE_MODELS.map(async ({ model, weight }) => {
-      let emb1Promise: Promise<number[]>;
-      let emb2Promise: Promise<number[]>;
-
-      if (model === 'thenlper/gte-base') {
-        await loadR2Embeddings(env);
-        const r2Emb1 = getR2Embedding(word1);
-        const r2Emb2 = getR2Embedding(word2);
-        emb1Promise = r2Emb1 ? Promise.resolve(r2Emb1) : getEmbedding(word1, model, env);
-        emb2Promise = r2Emb2 ? Promise.resolve(r2Emb2) : getEmbedding(word2, model, env);
-      } else {
-        emb1Promise = getEmbedding(word1, model, env);
-        emb2Promise = getEmbedding(word2, model, env);
-      }
-
-      const [emb1, emb2] = await Promise.all([emb1Promise, emb2Promise]);
-      return weight * cosineSimilarity(emb1, emb2);
-    })
-  );
-
-  return sims.reduce((sum, val) => sum + val, 0);
+  const [emb1, emb2] = await Promise.all([
+    getEmbedding(word1, env),
+    getEmbedding(word2, env),
+  ]);
+  return cosineSimilarity(emb1, emb2);
 }
 
 /**

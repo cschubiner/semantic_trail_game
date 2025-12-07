@@ -10,8 +10,7 @@ if (!API_KEY) {
 
 // Match Worker defaults
 const ENSEMBLE_MODELS = [
-  { model: 'google/gemini-embedding-001', weight: 0.7 },
-  { model: 'thenlper/gte-base', weight: 0.3 },
+  { model: 'google/gemini-embedding-001', weight: 1.0 },
 ];
 
 // Default scoring parameters from worker/src/index.ts
@@ -20,15 +19,15 @@ const CURVES = [
   { name: 'balanced', min: 0.10, max: 0.85, curve: 2.5 },
 ];
 
-// Piecewise mapping matching worker/src/index.ts
+// Piecewise mapping matching worker/src/index.ts (Gemini-only)
 const SCORE_POINTS = [
   { sim: 0.10, score: 0 },
-  { sim: 0.40, score: 5 },
-  { sim: 0.50, score: 20 },
-  { sim: 0.60, score: 45 },
-  { sim: 0.66, score: 65 },
-  { sim: 0.72, score: 95 },
-  { sim: 0.86, score: 100 },
+  { sim: 0.40, score: 10 },
+  { sim: 0.50, score: 25 },
+  { sim: 0.60, score: 50 },
+  { sim: 0.68, score: 75 },
+  { sim: 0.75, score: 95 },
+  { sim: 0.82, score: 100 },
 ];
 
 // Quick test set; edit as needed

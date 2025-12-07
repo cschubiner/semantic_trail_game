@@ -20,11 +20,11 @@ wrangler r2 bucket create "$BUCKET_NAME" 2>/dev/null || echo "Bucket may already
 
 # Upload binary embeddings
 echo "Uploading embeddings.bin..."
-wrangler r2 object put "$BUCKET_NAME/embeddings.bin" --file="$DATA_DIR/embeddings.bin"
+wrangler r2 object put "$BUCKET_NAME/embeddings.bin" --file="$DATA_DIR/embeddings.bin" --remote
 
 # Upload word index
 echo "Uploading embeddings-index.json..."
-wrangler r2 object put "$BUCKET_NAME/embeddings-index.json" --file="$DATA_DIR/embeddings-index.json"
+wrangler r2 object put "$BUCKET_NAME/embeddings-index.json" --file="$DATA_DIR/embeddings-index.json" --remote
 
 echo ""
 echo "Upload complete!"
