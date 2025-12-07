@@ -304,7 +304,13 @@ async function performRerank() {
       return;
     }
 
-    // Update guesses with LLM rankings
+    // Clear ALL old LLM rankings first, then apply new ones
+    for (const g of guesses) {
+      delete g.llmRank;
+      delete g.llmScore;
+    }
+
+    // Apply new LLM rankings
     const rankingMap = new Map();
     for (const r of data.rankings) {
       rankingMap.set(r.word.toLowerCase(), { rank: r.rank, llmScore: r.llmScore });
@@ -692,8 +698,23 @@ function renderGuesses() {
   noGuessesEl.classList.add('hidden');
   guessTable.classList.remove('hidden');
 
-  // Sort by score descending
-  const sorted = [...guesses].sort((a, b) => b.score - a.score);
+  // Sort: LLM-ranked words first (by LLM rank), then rest by embedding score
+  const sorted = [...guesses].sort((a, b) => {
+    // Both have LLM rank: sort by LLM rank ascending (1 is best)
+    if (a.llmRank && b.llmRank) {
+      return a.llmRank - b.llmRank;
+    }
+    // Only a has LLM rank: a comes first
+    if (a.llmRank && !b.llmRank) {
+      return -1;
+    }
+    // Only b has LLM rank: b comes first
+    if (!a.llmRank && b.llmRank) {
+      return 1;
+    }
+    // Neither has LLM rank: sort by embedding score descending
+    return b.score - a.score;
+  });
 
   // Build table rows
   guessTbody.innerHTML = sorted.map((g, index) => {
