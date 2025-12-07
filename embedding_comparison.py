@@ -15,6 +15,7 @@ from pathlib import Path
 
 import requests
 import numpy as np
+import concurrent.futures
 
 
 # Available embedding models on OpenRouter
