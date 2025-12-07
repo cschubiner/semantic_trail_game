@@ -345,6 +345,22 @@ header h1 {
   color: var(--bg-color);
 }
 
+.hint-buttons .new-word-btn {
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  background: var(--accent-color);
+  border: 1px solid var(--cold-color);
+  border-radius: 6px;
+  color: var(--cold-color);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.hint-buttons .new-word-btn:hover {
+  background: var(--cold-color);
+  color: var(--bg-color);
+}
+
 /* Hint display */
 .hint-display {
   text-align: center;
