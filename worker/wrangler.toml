@@ -12,10 +12,15 @@ id = "c084c661e9564d2683f0189f0c7abd2a"
 # Environment variables (non-secret)
 [vars]
 SECRET_SALT = "change-this-to-a-random-string"
-ALLOWED_ORIGINS = "https://cschubiner.github.io,http://localhost:8787,http://localhost:3000"
+ALLOWED_ORIGINS = "https://cschubiner.github.io,http://localhost:8787,http://localhost:3000,http://localhost:8080"
 
 # Secrets (set via `wrangler secret put OPENROUTER_API_KEY`):
 # - OPENROUTER_API_KEY
 
 # CORS settings for the frontend
 # The frontend will be hosted on GitHub Pages or similar
+
+# R2 bucket for precomputed embeddings (uncomment after enabling R2 in dashboard)
+# [[r2_buckets]]
+# binding = "EMBEDDINGS_BUCKET"
+# bucket_name = "semantic-trail-embeddings"

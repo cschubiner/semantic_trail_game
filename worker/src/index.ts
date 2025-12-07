@@ -2,16 +2,34 @@
  * Semantic Trail Backend - Cloudflare Worker
  *
  * Exposes POST /score endpoint for the word guessing game.
- * Uses ensemble embeddings with lazy KV caching.
+ * Uses GTE-base embeddings with R2 storage for precomputed embeddings.
  */
 
 import { WORD_LIST } from './wordlist';
 
-// Ensemble models (production pair)
-const ENSEMBLE_MODELS = [
-  'google/gemini-embedding-001',
-  'thenlper/gte-base',
-];
+// Single embedding model (GTE-base)
+const EMBEDDING_MODEL = 'thenlper/gte-base';
+
+// Stop words that cannot be guessed
+const STOP_WORDS = new Set([
+  'a', 'an', 'the',
+  'i', 'you', 'he', 'she', 'it', 'we', 'they',
+  'me', 'him', 'her', 'us', 'them',
+  'and', 'or', 'but', 'if', 'then', 'so',
+  'for', 'nor', 'yet',
+  'to', 'of', 'in', 'on', 'at', 'by', 'as',
+  'is', 'am', 'are', 'was', 'were', 'be', 'been', 'being',
+  'this', 'that', 'these', 'those',
+  'my', 'your', 'his', 'its', 'our', 'their',
+  'what', 'which', 'who', 'whom', 'whose',
+  'do', 'does', 'did', 'have', 'has', 'had',
+  'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+  'not', 'no', 'yes', 'all', 'any', 'some', 'each', 'every',
+  'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further',
+  'here', 'there', 'when', 'where', 'why', 'how',
+  'both', 'few', 'more', 'most', 'other', 'such', 'only', 'own', 'same',
+  'than', 'too', 'very', 'just', 'now',
+]);
 
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/embeddings';
 const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
@@ -32,9 +50,18 @@ const ESTIMATED_COST_PER_RERANK_CENTS = 0.05; // Conservative estimate
 const ESTIMATED_COST_PER_HINT_CENTS = 0.5;
 
 // Similarity to score mapping (non-linear)
-const MIN_SIM = 0.10; // anything below this is ~0
-const MAX_SIM = 0.80; // anything above this is ~100
-const SCORE_CURVE = 1.75; // >1 makes scores drop off faster (fewer "Warm" results)
+// Piecewise similarity->score mapping tuned for numeric words (less generous)
+// Control points are linearly interpolated; adjust to retune.
+const SCORE_POINTS: Array<{ sim: number; score: number }> = [
+  { sim: 0.10, score: 0 },
+  { sim: 0.40, score: 10 },
+  { sim: 0.50, score: 30 },
+  { sim: 0.57, score: 70 },
+  { sim: 0.60, score: 80 },
+  { sim: 0.65, score: 90 },
+  { sim: 0.79, score: 99 },
+  { sim: 0.85, score: 100 },
+];
 
 const EASTERN_FORMATTER = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
@@ -47,10 +74,17 @@ const EASTERN_FORMATTER = new Intl.DateTimeFormat('en-US', {
 
 interface Env {
   EMBED_CACHE: KVNamespace;
+  EMBEDDINGS_BUCKET?: R2Bucket; // Optional R2 bucket for precomputed embeddings
   OPENROUTER_API_KEY: string;
   SECRET_SALT: string;
   ALLOWED_ORIGINS?: string;
 }
+
+// R2 Embeddings state (loaded once per worker instance)
+let r2EmbeddingsLoaded = false;
+let r2WordIndex: Record<string, number> | null = null;
+let r2EmbeddingsData: Float32Array | null = null;
+const EMBEDDING_DIM = 768; // GTE-base dimension
 
 interface ScoreRequest {
   guess: string;
@@ -136,19 +170,26 @@ function getCorsHeaders(request: Request, env: Env): Record<string, string> {
 }
 
 /**
- * Convert cosine similarity to 0-100 score
+ * Convert cosine similarity to 0-100 score using piecewise linear control points.
+ * Keeps monotonicity while letting us tune specific regions (e.g., numeric words).
  */
 function similarityToScore(similarity: number): number {
-  if (similarity >= MAX_SIM) return 100;
-  if (similarity <= MIN_SIM) return 0;
+  // Clamp below/above
+  if (similarity <= SCORE_POINTS[0].sim) return 0;
+  if (similarity >= SCORE_POINTS[SCORE_POINTS.length - 1].sim) return 100;
 
-  const normalized = (similarity - MIN_SIM) / (MAX_SIM - MIN_SIM);
-  const curved = Math.pow(normalized, SCORE_CURVE);
-  const score = Math.round(curved * 100);
+  // Find the segment and linearly interpolate
+  for (let i = 0; i < SCORE_POINTS.length - 1; i++) {
+    const a = SCORE_POINTS[i];
+    const b = SCORE_POINTS[i + 1];
+    if (similarity >= a.sim && similarity <= b.sim) {
+      const t = (similarity - a.sim) / (b.sim - a.sim);
+      return Math.round(a.score + t * (b.score - a.score));
+    }
+  }
 
-  if (score < 0) return 0;
-  if (score > 100) return 100;
-  return score;
+  // Fallback (should not hit)
+  return 0;
 }
 
 /**
@@ -247,18 +288,22 @@ function getCacheKey(word: string, model: string): string {
 
 /**
  * Get embedding from cache or fetch from OpenRouter
+ * Uses single GTE-base model
  */
 async function getEmbedding(
   word: string,
-  model: string,
   env: Env
 ): Promise<number[]> {
-  const cacheKey = getCacheKey(word, model);
+  const cacheKey = getCacheKey(word, EMBEDDING_MODEL);
 
   // Try cache first
-  const cached = await env.EMBED_CACHE.get(cacheKey, 'json');
-  if (cached) {
-    return cached as number[];
+  try {
+    const cached = await env.EMBED_CACHE.get(cacheKey, 'json');
+    if (cached) {
+      return cached as number[];
+    }
+  } catch (e) {
+    console.warn('KV get failed, continuing without cache:', e);
   }
 
   // Fetch from OpenRouter
@@ -269,7 +314,7 @@ async function getEmbedding(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: model,
+      model: EMBEDDING_MODEL,
       input: word,
     }),
   });
@@ -282,32 +327,100 @@ async function getEmbedding(
   const data = await response.json() as { data: Array<{ embedding: number[] }> };
   const embedding = data.data[0].embedding;
 
-  // Cache for future use (no expiration)
-  await env.EMBED_CACHE.put(cacheKey, JSON.stringify(embedding));
+  // Try to cache for future use (non-fatal if it fails)
+  try {
+    await env.EMBED_CACHE.put(cacheKey, JSON.stringify(embedding));
+  } catch (e) {
+    console.warn('KV put failed, continuing without cache:', e);
+    // Do NOT rethrow - caching failure should not break the request
+  }
 
   return embedding;
 }
 
 /**
- * Get similarity using racing - returns result from whichever model responds first
- * Both models are called in parallel, first to complete wins
+ * Load precomputed embeddings from R2 (called once per worker instance)
  */
-async function getRacedSimilarity(
+async function loadR2Embeddings(env: Env): Promise<boolean> {
+  if (r2EmbeddingsLoaded) return r2WordIndex !== null;
+  r2EmbeddingsLoaded = true;
+
+  if (!env.EMBEDDINGS_BUCKET) {
+    console.log('R2 bucket not configured, using API fallback');
+    return false;
+  }
+
+  try {
+    // Load word index
+    const indexObj = await env.EMBEDDINGS_BUCKET.get('embeddings-index.json');
+    if (!indexObj) {
+      console.warn('R2: embeddings-index.json not found');
+      return false;
+    }
+    r2WordIndex = await indexObj.json();
+
+    // Load binary embeddings
+    const embObj = await env.EMBEDDINGS_BUCKET.get('embeddings.bin');
+    if (!embObj) {
+      console.warn('R2: embeddings.bin not found');
+      r2WordIndex = null;
+      return false;
+    }
+    const arrayBuffer = await embObj.arrayBuffer();
+    r2EmbeddingsData = new Float32Array(arrayBuffer);
+
+    console.log(`R2: Loaded ${Object.keys(r2WordIndex).length} word embeddings`);
+    return true;
+  } catch (e) {
+    console.error('Failed to load R2 embeddings:', e);
+    r2WordIndex = null;
+    r2EmbeddingsData = null;
+    return false;
+  }
+}
+
+/**
+ * Get embedding from R2 precomputed data
+ * Returns null if word not found in R2
+ */
+function getR2Embedding(word: string): number[] | null {
+  if (!r2WordIndex || !r2EmbeddingsData) return null;
+
+  const wordLower = word.toLowerCase();
+  const index = r2WordIndex[wordLower];
+  if (index === undefined) return null;
+
+  const start = index * EMBEDDING_DIM;
+  const end = start + EMBEDDING_DIM;
+  return Array.from(r2EmbeddingsData.slice(start, end));
+}
+
+/**
+ * Get similarity between two words using GTE-base embeddings
+ * Tries R2 first, falls back to API
+ */
+async function getSimilarity(
   word1: string,
   word2: string,
   env: Env
 ): Promise<number> {
-  // Create a promise for each model that fetches both embeddings and computes similarity
-  const modelPromises = ENSEMBLE_MODELS.map(async (model) => {
-    const [emb1, emb2] = await Promise.all([
-      getEmbedding(word1, model, env),
-      getEmbedding(word2, model, env),
-    ]);
-    return cosineSimilarity(emb1, emb2);
-  });
+  // Try R2 first
+  await loadR2Embeddings(env);
 
-  // Race all models - first to respond wins
-  return Promise.race(modelPromises);
+  const r2Emb1 = getR2Embedding(word1);
+  const r2Emb2 = getR2Embedding(word2);
+
+  // If both embeddings are in R2, use them (fast path)
+  if (r2Emb1 && r2Emb2) {
+    return cosineSimilarity(r2Emb1, r2Emb2);
+  }
+
+  // Fall back to API for any missing embeddings
+  const [emb1, emb2] = await Promise.all([
+    r2Emb1 ? Promise.resolve(r2Emb1) : getEmbedding(word1, env),
+    r2Emb2 ? Promise.resolve(r2Emb2) : getEmbedding(word2, env),
+  ]);
+  return cosineSimilarity(emb1, emb2);
 }
 
 /**
@@ -436,6 +549,16 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ error: 'Guess must contain only letters' }, 400, request, env);
   }
 
+  // Minimum length check
+  if (guess.length < 3) {
+    return jsonResponse({ error: 'Guess must be at least 3 letters' }, 400, request, env);
+  }
+
+  // Block stop words
+  if (STOP_WORDS.has(guess)) {
+    return jsonResponse({ error: 'That word is too common' }, 400, request, env);
+  }
+
   // Get game index (0 = word of the day, 1+ = random games)
   const gameIndex = body.game ?? 0;
 
@@ -453,12 +576,9 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
     return jsonResponse(response, 200, request, env);
   }
 
-  // Check if guess is in word list (optional validation)
-  // For now, we allow any word but could restrict to WORD_LIST
-
-  // Get ensemble similarity
+  // Get similarity using GTE-base
   try {
-    const similarity = await getRacedSimilarity(guess, secret, env);
+    const similarity = await getSimilarity(guess, secret, env);
     const score = similarityToScore(similarity);
 
     const response: ScoreResponse = {

@@ -15,6 +15,27 @@ const API_URL = API_BASE + '/score';
 // For demo/testing without backend, set this to true
 const DEMO_MODE = false;
 
+// Stop words that cannot be guessed
+const STOP_WORDS = new Set([
+  'a', 'an', 'the',
+  'i', 'you', 'he', 'she', 'it', 'we', 'they',
+  'me', 'him', 'her', 'us', 'them',
+  'and', 'or', 'but', 'if', 'then', 'so',
+  'for', 'nor', 'yet',
+  'to', 'of', 'in', 'on', 'at', 'by', 'as',
+  'is', 'am', 'are', 'was', 'were', 'be', 'been', 'being',
+  'this', 'that', 'these', 'those',
+  'my', 'your', 'his', 'its', 'our', 'their',
+  'what', 'which', 'who', 'whom', 'whose',
+  'do', 'does', 'did', 'have', 'has', 'had',
+  'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+  'not', 'no', 'yes', 'all', 'any', 'some', 'each', 'every',
+  'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further',
+  'here', 'there', 'when', 'where', 'why', 'how',
+  'both', 'few', 'more', 'most', 'other', 'such', 'only', 'own', 'same',
+  'than', 'too', 'very', 'just', 'now',
+]);
+
 // Game state
 let guesses = []; // Array of { word, similarity, score, bucket, isCorrect, llmRank?, llmScore? }
 let recentAttempts = []; // Track last 10 attempts (including duplicates) for display
@@ -523,6 +544,18 @@ async function submitGuess(word = null) {
 
   if (!/^[a-z]+$/.test(guess)) {
     showStatus('Please enter letters only', 'error');
+    return;
+  }
+
+  // Minimum length check
+  if (guess.length < 3) {
+    showStatus('Guesses must be at least 3 letters', 'error');
+    return;
+  }
+
+  // Block stop words
+  if (STOP_WORDS.has(guess)) {
+    showStatus('That word is too common. Try a more specific word.', 'error');
     return;
   }
 
