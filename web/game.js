@@ -329,9 +329,10 @@ async function performRerank() {
       if (guess) {
         guess.llmRank = r.rank;
         // Normalize: rank 1 → embMax, rank N → embMin
-        guess.llmScore = N > 1
+        const rawScore = N > 1
           ? embMax - (r.rank - 1) * (embMax - embMin) / (N - 1)
           : embMax;
+        guess.llmScore = Math.round(rawScore);
       }
     }
 
