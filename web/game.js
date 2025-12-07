@@ -799,7 +799,9 @@ function resetGame() {
  * Start a new game with a different random word
  */
 function newRandomGame() {
-  currentGameIndex++;
+  // Generate a random game ID (1 to 1 billion) instead of incrementing
+  // Game 0 is reserved for the deterministic word of the day
+  currentGameIndex = Math.floor(Math.random() * 1_000_000_000) + 1;
   guesses = [];
   recentAttempts = [];
   gameWon = false;
@@ -810,7 +812,7 @@ function newRandomGame() {
   resetTimer();
   resetRerankState();
   setInputDisabled(false);
-  showStatus(`New word #${currentGameIndex + 1}!`, 'success');
+  showStatus('New random word!', 'success');
   renderGuesses();
   saveGameState();
   guessInput.focus();
