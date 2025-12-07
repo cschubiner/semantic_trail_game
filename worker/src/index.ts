@@ -47,6 +47,7 @@ interface Env {
 
 interface ScoreRequest {
   guess: string;
+  game?: number; // 0 = word of the day, 1+ = random games
 }
 
 interface ScoreResponse {
@@ -75,6 +76,7 @@ interface RerankRequest {
     word: string;
     score: number;
   }>;
+  game?: number;
 }
 
 interface RerankResponse {
@@ -201,10 +203,13 @@ async function hashString(str: string): Promise<number> {
 
 /**
  * Get today's secret word deterministically
+ * @param salt - Secret salt for hashing
+ * @param gameIndex - 0 for word of the day, 1+ for additional random games
  */
-async function getSecretWord(salt: string): Promise<string> {
+async function getSecretWord(salt: string, gameIndex: number = 0): Promise<string> {
   const gameDay = getGameDateString(); // YYYY-MM-DD in ET with 5am cutoff
-  const hash = await hashString(gameDay + salt);
+  // Include gameIndex in hash so each game gets a different word
+  const hash = await hashString(gameDay + salt + ':' + gameIndex);
   const index = hash % WORD_LIST.length;
   return WORD_LIST[index];
 }
@@ -409,8 +414,11 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ error: 'Guess must contain only letters' }, 400, request, env);
   }
 
+  // Get game index (0 = word of the day, 1+ = random games)
+  const gameIndex = body.game ?? 0;
+
   // Get today's secret word
-  const secret = await getSecretWord(env.SECRET_SALT);
+  const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
 
   // Check for exact match
   if (guess === secret) {
@@ -456,8 +464,9 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
 async function handleHint(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const hintType = url.searchParams.get('type') || 'letter';
+  const gameIndex = parseInt(url.searchParams.get('game') || '0', 10);
 
-  const secret = await getSecretWord(env.SECRET_SALT);
+  const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
 
   let hint: string;
   let type: 'first_letter' | 'length';
@@ -478,7 +487,10 @@ async function handleHint(request: Request, env: Env): Promise<Response> {
  * Handle GET /reveal
  */
 async function handleReveal(request: Request, env: Env): Promise<Response> {
-  const secret = await getSecretWord(env.SECRET_SALT);
+  const url = new URL(request.url);
+  const gameIndex = parseInt(url.searchParams.get('game') || '0', 10);
+
+  const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
 
   const response: RevealResponse = {
     word: secret,
@@ -507,6 +519,9 @@ async function handleRerank(request: Request, env: Env): Promise<Response> {
   // Limit to top 20
   const topGuesses = body.guesses.slice(0, 20);
 
+  // Get game index
+  const gameIndex = body.game ?? 0;
+
   // Check budget before making LLM call
   const canProceed = await checkAndIncrementCost(env);
   if (!canProceed) {
@@ -523,7 +538,7 @@ async function handleRerank(request: Request, env: Env): Promise<Response> {
   }
 
   // Get secret word for LLM ranking
-  const secret = await getSecretWord(env.SECRET_SALT);
+  const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
 
   try {
     const rankings = await rerankWithLLM(topGuesses, secret, env);

@@ -405,15 +405,9 @@ header h1 {
   white-space: nowrap;
 }
 
-.llm-rank {
+.llm-score {
   color: var(--warm-color);
   font-weight: bold;
-}
-
-.llm-score {
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  margin-left: 4px;
 }
 
 .llm-pending {

@@ -20,6 +20,10 @@ let guesses = []; // Array of { word, similarity, score, bucket, isCorrect, llmR
 let gameWon = false;
 let isProcessingGuess = false;
 let guessQueue = []; // Queue of words waiting to be submitted
+let currentGameIndex = 0; // 0 = word of the day, 1+ = random games
+
+// LocalStorage key (includes date so it resets daily)
+const STORAGE_KEY = 'semanticTrail_' + new Date().toISOString().split('T')[0];
 
 // LLM Re-ranking state
 let rerankInterval = null;
@@ -200,6 +204,71 @@ function resetTimer() {
 }
 
 // ============================================================
+// LocalStorage Persistence
+// ============================================================
+
+/**
+ * Save game state to localStorage
+ */
+function saveGameState() {
+  const state = {
+    guesses,
+    gameWon,
+    timerStarted,
+    timerStartTime,
+    timerPenaltyMs,
+    finalTime,
+    rerankGroupId,
+    lastGuessTime,
+    currentGameIndex,
+  };
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.error('Failed to save game state:', e);
+  }
+}
+
+/**
+ * Load game state from localStorage
+ */
+function loadGameState() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return false;
+
+    const state = JSON.parse(saved);
+    guesses = state.guesses || [];
+    gameWon = state.gameWon || false;
+    timerStarted = state.timerStarted || false;
+    timerStartTime = state.timerStartTime;
+    timerPenaltyMs = state.timerPenaltyMs || 0;
+    finalTime = state.finalTime;
+    rerankGroupId = state.rerankGroupId || 0;
+    lastGuessTime = state.lastGuessTime;
+    currentGameIndex = state.currentGameIndex || 0;
+
+    return true;
+  } catch (e) {
+    console.error('Failed to load game state:', e);
+    return false;
+  }
+}
+
+/**
+ * Clear old localStorage keys from previous days
+ */
+function clearOldStorage() {
+  const todayKey = STORAGE_KEY;
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith('semanticTrail_') && key !== todayKey) {
+      localStorage.removeItem(key);
+    }
+  }
+}
+
+// ============================================================
 // LLM Re-ranking Functions (Smart Anchor Algorithm)
 // ============================================================
 
@@ -341,7 +410,8 @@ async function performSmartRerank(batch, batchHash) {
   const floor = Math.min(...embeddingScores);
 
   const requestBody = {
-    guesses: batch.map(g => ({ word: g.word, score: g.score }))
+    guesses: batch.map(g => ({ word: g.word, score: g.score })),
+    game: currentGameIndex
   };
 
   try {
@@ -392,6 +462,7 @@ async function performSmartRerank(batch, batchHash) {
 
     previousTop20Hash = batchHash;
     renderGuesses();
+    saveGameState();
     console.log(`Smart rerank complete: ${resultCount} words, range ${ceiling}->${floor}`);
 
   } catch (error) {
@@ -472,7 +543,7 @@ async function processGuess(guess) {
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ guess }),
+        body: JSON.stringify({ guess, game: currentGameIndex }),
       });
 
       if (!response.ok) {
@@ -512,6 +583,7 @@ async function processGuess(guess) {
 
     // Update UI
     renderGuesses();
+    saveGameState();
 
   } catch (error) {
     console.error('Error submitting guess:', error);
@@ -625,10 +697,11 @@ function handleWin(word) {
   winBanner.classList.remove('hidden');
   setInputDisabled(true);
   showStatus('', '');
+  saveGameState();
 }
 
 /**
- * Reset the game
+ * Reset the game (same word)
  */
 function resetGame() {
   guesses = [];
@@ -641,8 +714,35 @@ function resetGame() {
   resetTimer();
   resetRerankState();
   setInputDisabled(false);
-  showStatus('New game started!', 'success');
+  showStatus('Game reset!', 'success');
   renderGuesses();
+  saveGameState();
+  guessInput.focus();
+
+  // Clear status after a moment
+  setTimeout(() => {
+    if (!gameWon) showStatus('', '');
+  }, 2000);
+}
+
+/**
+ * Start a new game with a different random word
+ */
+function newRandomGame() {
+  currentGameIndex++;
+  guesses = [];
+  gameWon = false;
+  guessQueue = [];
+  isProcessingGuess = false;
+  winBanner.classList.add('hidden');
+  hintDisplay.classList.add('hidden');
+  hintDisplay.textContent = '';
+  resetTimer();
+  resetRerankState();
+  setInputDisabled(false);
+  showStatus(`New word #${currentGameIndex + 1}!`, 'success');
+  renderGuesses();
+  saveGameState();
   guessInput.focus();
 
   // Clear status after a moment
@@ -679,7 +779,7 @@ async function getHint(type) {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/hint?type=${type}`);
+    const response = await fetch(`${API_BASE}/hint?type=${type}&game=${currentGameIndex}`);
     if (!response.ok) {
       throw new Error('Failed to get hint');
     }
@@ -708,7 +808,7 @@ async function revealWord() {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/reveal`);
+    const response = await fetch(`${API_BASE}/reveal?game=${currentGameIndex}`);
     if (!response.ok) {
       throw new Error('Failed to reveal word');
     }
@@ -716,6 +816,7 @@ async function revealWord() {
     showHint(data.message);
     gameWon = true;
     setInputDisabled(true);
+    saveGameState();
   } catch (error) {
     console.error('Error revealing word:', error);
     showStatus('Failed to reveal word', 'error');
@@ -763,9 +864,9 @@ function renderGuesses() {
     const bucketClass = getBucketClass(displayScore, g.isCorrect);
     const barClass = getBarClass(displayScore, g.isCorrect);
 
-    // Show LLM rank if available
-    const llmDisplay = g.llmRank
-      ? `<span class="llm-rank">#${g.llmRank}</span>${g.llmScore !== undefined ? `<span class="llm-score">(${g.llmScore})</span>` : ''}`
+    // Show LLM score if available (yellow, rounded)
+    const llmDisplay = g.llmScore !== undefined
+      ? `<span class="llm-score">${Math.round(g.llmScore)}</span>`
       : '<span class="llm-pending">—</span>';
 
     return `
@@ -1032,8 +1133,46 @@ hintLetterBtn.addEventListener('click', () => getHint('letter'));
 hintLengthBtn.addEventListener('click', () => getHint('length'));
 revealBtn.addEventListener('click', revealWord);
 
-// Focus input on page load
+// Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
+  // Clear old day's storage
+  clearOldStorage();
+
+  // Try to restore saved state
+  if (loadGameState()) {
+    console.log('Restored game state:', guesses.length, 'guesses');
+    renderGuesses();
+
+    // Restore timer display if game was in progress
+    if (timerStarted && !gameWon) {
+      timerDisplay.classList.remove('hidden');
+      timerInterval = setInterval(updateTimerDisplay, 100);
+      updateTimerDisplay();
+      // Restart rerank interval if there were guesses
+      if (guesses.length >= 3) {
+        startRerankInterval();
+      }
+    }
+
+    // Restore win banner if game was won
+    if (gameWon) {
+      const winningGuess = guesses.find(g => g.isCorrect);
+      if (winningGuess) {
+        winWord.textContent = winningGuess.word.toUpperCase();
+        winGuesses.textContent = guesses.length;
+        const elapsed = getElapsedSeconds();
+        const finalTier = getCurrentTier(elapsed);
+        winTime.textContent = formatTime(elapsed);
+        winTierEl.textContent = `${finalTier.emoji} ${finalTier.name}`;
+        winTierEl.style.color = finalTier.color;
+        winBanner.classList.remove('hidden');
+        timerDisplay.classList.remove('hidden');
+        updateTimerDisplay();
+        setInputDisabled(true);
+      }
+    }
+  }
+
   guessInput.focus();
 
   // Show demo mode notice
