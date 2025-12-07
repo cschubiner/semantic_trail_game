@@ -1450,7 +1450,7 @@ def main():
     all_correlations.append(skirt_corrs)
 
     # Ensemble evaluation - embeddings only
-    embedding_models = {m for m, _ in model_ids}
+    embedding_models = set(model_ids)
     embedding_ensemble_results = run_ensemble_evaluation(
         all_results,
         all_correlations,

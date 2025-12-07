@@ -304,23 +304,34 @@ async function performRerank() {
       return;
     }
 
-    // Clear ALL old LLM rankings first, then apply new ones
+    // Clear ALL old LLM rankings first
     for (const g of guesses) {
       delete g.llmRank;
       delete g.llmScore;
     }
 
-    // Apply new LLM rankings
-    const rankingMap = new Map();
-    for (const r of data.rankings) {
-      rankingMap.set(r.word.toLowerCase(), { rank: r.rank, llmScore: r.llmScore });
-    }
+    // Get the words that were ranked and their embedding scores for normalization
+    const rankedWords = data.rankings.map(r => {
+      const guess = guesses.find(g => g.word.toLowerCase() === r.word.toLowerCase());
+      return { ...r, embeddingScore: guess ? guess.score : 50 };
+    });
 
-    for (const g of guesses) {
-      const rankInfo = rankingMap.get(g.word.toLowerCase());
-      if (rankInfo) {
-        g.llmRank = rankInfo.rank;
-        g.llmScore = rankInfo.llmScore;
+    // Min-max normalization: convert LLM ranks to 0-100 scale
+    // Use embedding scores of the ranked words as the scale bounds
+    const embScores = rankedWords.map(w => w.embeddingScore);
+    const embMax = Math.max(...embScores);
+    const embMin = Math.min(...embScores);
+    const N = rankedWords.length;
+
+    // Apply normalized LLM scores
+    for (const r of rankedWords) {
+      const guess = guesses.find(g => g.word.toLowerCase() === r.word.toLowerCase());
+      if (guess) {
+        guess.llmRank = r.rank;
+        // Normalize: rank 1 → embMax, rank N → embMin
+        guess.llmScore = N > 1
+          ? embMax - (r.rank - 1) * (embMax - embMin) / (N - 1)
+          : embMax;
       }
     }
 
@@ -698,22 +709,12 @@ function renderGuesses() {
   noGuessesEl.classList.add('hidden');
   guessTable.classList.remove('hidden');
 
-  // Sort: LLM-ranked words first (by LLM rank), then rest by embedding score
+  // Sort by best available score (llmScore if exists, else embedding score)
+  // This allows new words to slot into the appropriate position
   const sorted = [...guesses].sort((a, b) => {
-    // Both have LLM rank: sort by LLM rank ascending (1 is best)
-    if (a.llmRank && b.llmRank) {
-      return a.llmRank - b.llmRank;
-    }
-    // Only a has LLM rank: a comes first
-    if (a.llmRank && !b.llmRank) {
-      return -1;
-    }
-    // Only b has LLM rank: b comes first
-    if (!a.llmRank && b.llmRank) {
-      return 1;
-    }
-    // Neither has LLM rank: sort by embedding score descending
-    return b.score - a.score;
+    const scoreA = a.llmScore ?? a.score;
+    const scoreB = b.llmScore ?? b.score;
+    return scoreB - scoreA; // Descending (highest first)
   });
 
   // Build table rows
