@@ -20,7 +20,7 @@ ALLOWED_ORIGINS = "https://cschubiner.github.io,http://localhost:8787,http://loc
 # CORS settings for the frontend
 # The frontend will be hosted on GitHub Pages or similar
 
-# R2 bucket for precomputed embeddings (uncomment after enabling R2 in dashboard)
-# [[r2_buckets]]
-# binding = "EMBEDDINGS_BUCKET"
-# bucket_name = "semantic-trail-embeddings"
+# R2 bucket for precomputed embeddings
+[[r2_buckets]]
+binding = "EMBEDDINGS_BUCKET"
+bucket_name = "semantic-trail-embeddings"

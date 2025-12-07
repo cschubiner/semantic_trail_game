@@ -2,13 +2,17 @@
  * Semantic Trail Backend - Cloudflare Worker
  *
  * Exposes POST /score endpoint for the word guessing game.
- * Uses GTE-base embeddings with R2 storage for precomputed embeddings.
+ * Uses ensemble embeddings with a weighted average (Gemini + GTE-base).
+ * Tries R2 for GTE-base, KV/API for both.
  */
 
 import { WORD_LIST } from './wordlist';
 
-// Single embedding model (GTE-base)
-const EMBEDDING_MODEL = 'thenlper/gte-base';
+// Ensemble embedding models and weights (must sum to 1.0)
+const ENSEMBLE_MODELS: Array<{ model: string; weight: number }> = [
+  { model: 'google/gemini-embedding-001', weight: 0.7 },
+  { model: 'thenlper/gte-base', weight: 0.3 },
+];
 
 // Stop words that cannot be guessed
 const STOP_WORDS = new Set([
@@ -52,15 +56,15 @@ const ESTIMATED_COST_PER_HINT_CENTS = 0.5;
 // Similarity to score mapping (non-linear)
 // Piecewise similarity->score mapping tuned for numeric words (less generous)
 // Control points are linearly interpolated; adjust to retune.
+// Control points tuned to damp false positives while keeping close matches high
 const SCORE_POINTS: Array<{ sim: number; score: number }> = [
   { sim: 0.10, score: 0 },
-  { sim: 0.40, score: 10 },
-  { sim: 0.50, score: 30 },
-  { sim: 0.57, score: 70 },
-  { sim: 0.60, score: 80 },
-  { sim: 0.65, score: 90 },
-  { sim: 0.79, score: 99 },
-  { sim: 0.85, score: 100 },
+  { sim: 0.40, score: 5 },
+  { sim: 0.50, score: 20 },
+  { sim: 0.60, score: 45 },
+  { sim: 0.66, score: 65 },
+  { sim: 0.72, score: 95 },
+  { sim: 0.86, score: 100 },
 ];
 
 const EASTERN_FORMATTER = new Intl.DateTimeFormat('en-US', {
@@ -80,11 +84,11 @@ interface Env {
   ALLOWED_ORIGINS?: string;
 }
 
-// R2 Embeddings state (loaded once per worker instance)
+// R2 Embeddings state (loaded once per worker instance) - only for GTE-base
 let r2EmbeddingsLoaded = false;
 let r2WordIndex: Record<string, number> | null = null;
 let r2EmbeddingsData: Float32Array | null = null;
-const EMBEDDING_DIM = 768; // GTE-base dimension
+const EMBEDDING_DIM = 768; // Both models are 768-dim
 
 interface ScoreRequest {
   guess: string;
@@ -287,14 +291,22 @@ function getCacheKey(word: string, model: string): string {
 }
 
 /**
- * Get embedding from cache or fetch from OpenRouter
- * Uses single GTE-base model
+ * Get embedding from cache or fetch from OpenRouter for a specific model.
+ * Uses R2 fast path only for GTE-base; other models use API/KV cache.
  */
 async function getEmbedding(
   word: string,
+  model: string,
   env: Env
 ): Promise<number[]> {
-  const cacheKey = getCacheKey(word, EMBEDDING_MODEL);
+  // R2 shortcut only for GTE-base
+  if (model === 'thenlper/gte-base') {
+    await loadR2Embeddings(env);
+    const r2 = getR2Embedding(word);
+    if (r2) return r2;
+  }
+
+  const cacheKey = getCacheKey(word, model);
 
   // Try cache first
   try {
@@ -314,14 +326,14 @@ async function getEmbedding(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: EMBEDDING_MODEL,
+      model,
       input: word,
     }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`OpenRouter API error: ${response.status} - ${text}`);
+    throw new Error(`OpenRouter API error (${model}): ${response.status} - ${text}`);
   }
 
   const data = await response.json() as { data: Array<{ embedding: number[] }> };
@@ -332,7 +344,6 @@ async function getEmbedding(
     await env.EMBED_CACHE.put(cacheKey, JSON.stringify(embedding));
   } catch (e) {
     console.warn('KV put failed, continuing without cache:', e);
-    // Do NOT rethrow - caching failure should not break the request
   }
 
   return embedding;
@@ -380,7 +391,7 @@ async function loadR2Embeddings(env: Env): Promise<boolean> {
 }
 
 /**
- * Get embedding from R2 precomputed data
+ * Get embedding from R2 precomputed data (GTE-base only)
  * Returns null if word not found in R2
  */
 function getR2Embedding(word: string): number[] | null {
@@ -396,31 +407,35 @@ function getR2Embedding(word: string): number[] | null {
 }
 
 /**
- * Get similarity between two words using GTE-base embeddings
- * Tries R2 first, falls back to API
+ * Get similarity between two words using ensemble embeddings (weighted average).
  */
 async function getSimilarity(
   word1: string,
   word2: string,
   env: Env
 ): Promise<number> {
-  // Try R2 first
-  await loadR2Embeddings(env);
+  const sims = await Promise.all(
+    ENSEMBLE_MODELS.map(async ({ model, weight }) => {
+      let emb1Promise: Promise<number[]>;
+      let emb2Promise: Promise<number[]>;
 
-  const r2Emb1 = getR2Embedding(word1);
-  const r2Emb2 = getR2Embedding(word2);
+      if (model === 'thenlper/gte-base') {
+        await loadR2Embeddings(env);
+        const r2Emb1 = getR2Embedding(word1);
+        const r2Emb2 = getR2Embedding(word2);
+        emb1Promise = r2Emb1 ? Promise.resolve(r2Emb1) : getEmbedding(word1, model, env);
+        emb2Promise = r2Emb2 ? Promise.resolve(r2Emb2) : getEmbedding(word2, model, env);
+      } else {
+        emb1Promise = getEmbedding(word1, model, env);
+        emb2Promise = getEmbedding(word2, model, env);
+      }
 
-  // If both embeddings are in R2, use them (fast path)
-  if (r2Emb1 && r2Emb2) {
-    return cosineSimilarity(r2Emb1, r2Emb2);
-  }
+      const [emb1, emb2] = await Promise.all([emb1Promise, emb2Promise]);
+      return weight * cosineSimilarity(emb1, emb2);
+    })
+  );
 
-  // Fall back to API for any missing embeddings
-  const [emb1, emb2] = await Promise.all([
-    r2Emb1 ? Promise.resolve(r2Emb1) : getEmbedding(word1, env),
-    r2Emb2 ? Promise.resolve(r2Emb2) : getEmbedding(word2, env),
-  ]);
-  return cosineSimilarity(emb1, emb2);
+  return sims.reduce((sum, val) => sum + val, 0);
 }
 
 /**
@@ -442,21 +457,27 @@ function getHourKey(): string {
 async function checkAndIncrementCost(env: Env, costCents: number = ESTIMATED_COST_PER_RERANK_CENTS): Promise<boolean> {
   const hourKey = getHourKey();
 
-  // Get current spend for this hour
-  const currentSpendStr = await env.EMBED_CACHE.get(hourKey);
-  const currentSpend = currentSpendStr ? parseFloat(currentSpendStr) : 0;
+  try {
+    // Get current spend for this hour
+    const currentSpendStr = await env.EMBED_CACHE.get(hourKey);
+    const currentSpend = currentSpendStr ? parseFloat(currentSpendStr) : 0;
 
-  // Check if we'd exceed budget
-  if (currentSpend + costCents > HOURLY_BUDGET_CENTS) {
-    console.log(`Rate limited: current spend ${currentSpend} cents, budget ${HOURLY_BUDGET_CENTS} cents`);
-    return false;
+    // Check if we'd exceed budget
+    if (currentSpend + costCents > HOURLY_BUDGET_CENTS) {
+      console.log(`Rate limited: current spend ${currentSpend} cents, budget ${HOURLY_BUDGET_CENTS} cents`);
+      return false;
+    }
+
+    // Increment and save (with 2 hour TTL so old keys expire)
+    const newSpend = currentSpend + costCents;
+    await env.EMBED_CACHE.put(hourKey, newSpend.toString(), { expirationTtl: 7200 });
+
+    return true;
+  } catch (e) {
+    // If KV fails (e.g., daily limit exceeded), allow the request but log warning
+    console.warn('Cost tracking failed (KV error), allowing request:', e);
+    return true;
   }
-
-  // Increment and save (with 2 hour TTL so old keys expire)
-  const newSpend = currentSpend + costCents;
-  await env.EMBED_CACHE.put(hourKey, newSpend.toString(), { expirationTtl: 7200 });
-
-  return true;
 }
 
 /**

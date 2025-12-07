@@ -1,0 +1,11 @@
+# Environment variables (contains secrets)
+.env
+
+# Generated data
+data/
+
+# Node modules
+node_modules/
+
+# Wrangler
+.wrangler/

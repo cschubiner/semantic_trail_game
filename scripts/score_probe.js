@@ -10,8 +10,8 @@ if (!API_KEY) {
 
 // Match Worker defaults
 const ENSEMBLE_MODELS = [
-  'google/gemini-embedding-001',
-  'thenlper/gte-base',
+  { model: 'google/gemini-embedding-001', weight: 0.7 },
+  { model: 'thenlper/gte-base', weight: 0.3 },
 ];
 
 // Default scoring parameters from worker/src/index.ts
@@ -23,13 +23,12 @@ const CURVES = [
 // Piecewise mapping matching worker/src/index.ts
 const SCORE_POINTS = [
   { sim: 0.10, score: 0 },
-  { sim: 0.40, score: 10 },
-  { sim: 0.50, score: 30 },
-  { sim: 0.57, score: 70 },
-  { sim: 0.60, score: 80 },
-  { sim: 0.65, score: 90 },
-  { sim: 0.79, score: 99 },
-  { sim: 0.85, score: 100 },
+  { sim: 0.40, score: 5 },
+  { sim: 0.50, score: 20 },
+  { sim: 0.60, score: 45 },
+  { sim: 0.66, score: 65 },
+  { sim: 0.72, score: 95 },
+  { sim: 0.86, score: 100 },
 ];
 
 // Quick test set; edit as needed
@@ -37,6 +36,10 @@ const TESTS = [
   {
     secret: 'nines',
     guesses: ['human', 'number', 'nine', 'digits', 'cat'],
+  },
+  {
+    secret: 'enforcement',
+    guesses: ['tiger', 'human', 'man', 'number', 'nine', 'science', 'red', 'green', 'blasphemy', 'encryption', 'particle', 'aphrodisiac', 'burning'],
   },
   {
     secret: 'bridge',
@@ -112,7 +115,7 @@ function scorePiecewise(similarity) {
 
 async function evaluatePair(secret, guess) {
   // Launch both models in parallel to measure which would win the race
-  const tasks = ENSEMBLE_MODELS.map(async (model) => {
+  const tasks = ENSEMBLE_MODELS.map(async ({ model, weight }) => {
     const t0 = performance.now();
     const [a, b] = await Promise.all([
       fetchEmbedding(secret, model),
@@ -120,26 +123,29 @@ async function evaluatePair(secret, guess) {
     ]);
     const elapsedMs = performance.now() - t0;
     const similarity = cosineSimilarity(a, b);
-    return { model, similarity, elapsedMs };
+    return { model, weight, similarity, elapsedMs };
   });
 
   const results = await Promise.all(tasks);
   const winner = results.reduce((best, r) => (r.elapsedMs < best.elapsedMs ? r : best), results[0]);
+  const weightedSim = results.reduce((sum, r) => sum + r.similarity * r.weight, 0);
 
   // Compute scores for each curve option
   const perCurve = CURVES.map(cfg => ({
     name: cfg.name,
     raceScore: similarityToScore(winner.similarity, cfg),
     perModel: results.map(r => ({ model: r.model, score: similarityToScore(r.similarity, cfg) })),
+    weightedScore: similarityToScore(weightedSim, cfg),
   }));
 
   const piecewise = {
     name: 'piecewise (worker)',
     raceScore: scorePiecewise(winner.similarity),
     perModel: results.map(r => ({ model: r.model, score: scorePiecewise(r.similarity) })),
+    weightedScore: scorePiecewise(weightedSim),
   };
 
-  return { results, winner, perCurve, piecewise };
+  return { results, winner, perCurve, piecewise, weightedSim };
 }
 
 async function main() {
@@ -147,16 +153,16 @@ async function main() {
     console.log(`\nSecret: ${test.secret}`);
     for (const guess of test.guesses) {
       try {
-        const { results, winner, perCurve, piecewise } = await evaluatePair(test.secret, guess);
+        const { results, winner, perCurve, piecewise, weightedSim } = await evaluatePair(test.secret, guess);
         const sims = results.map(r => `${r.model}: ${r.similarity.toFixed(3)} (${r.elapsedMs.toFixed(0)}ms)`).join(' | ');
         console.log(`  Guess: ${guess}`);
-        console.log(`    Sims: ${sims}`);
+        console.log(`    Sims: ${sims} | weighted: ${weightedSim.toFixed(3)}`);
         perCurve.forEach(cfg => {
           const modelScores = cfg.perModel.map(m => `${m.model}:${m.score}`).join(', ');
-          console.log(`    Curve ${cfg.name}: race=${cfg.raceScore} | ${modelScores}`);
+          console.log(`    Curve ${cfg.name}: race=${cfg.raceScore} | weighted=${cfg.weightedScore} | ${modelScores}`);
         });
         const pwScores = piecewise.perModel.map(m => `${m.model}:${m.score}`).join(', ');
-        console.log(`    ${piecewise.name}: race=${piecewise.raceScore} | ${pwScores}`);
+        console.log(`    ${piecewise.name}: race=${piecewise.raceScore} | weighted=${piecewise.weightedScore} | ${pwScores}`);
       } catch (err) {
         console.error(`  Guess: ${guess} -> error: ${err.message}`);
       }
