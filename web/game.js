@@ -445,12 +445,12 @@ async function processGuess(guess) {
       result = await response.json();
     }
 
-    // Add to guesses
+    // Add to guesses (compute bucket on frontend)
     guesses.push({
       word: result.guess,
       similarity: result.similarity,
       score: result.score,
-      bucket: result.bucket,
+      bucket: getBucket(result.score),
       isCorrect: result.isCorrect || false,
     });
 

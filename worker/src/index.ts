@@ -53,8 +53,6 @@ interface ScoreResponse {
   guess: string;
   similarity: number;
   score: number;
-  bucket: string;
-  rank?: number;
   isCorrect?: boolean;
 }
 
@@ -87,18 +85,6 @@ interface RerankResponse {
   }>;
   rateLimited?: boolean;
   message?: string;
-}
-
-/**
- * Get bucket label based on score
- */
-function getBucket(score: number): string {
-  if (score >= 95) return '🔥 BURNING';
-  if (score >= 80) return '🔥 Hot';
-  if (score >= 60) return '☀ Warm';
-  if (score >= 40) return '〰 Tepid';
-  if (score >= 20) return '❄ Cold';
-  return '🧊 Freezing';
 }
 
 /**
@@ -432,7 +418,6 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
       guess,
       similarity: 1.0,
       score: 100,
-      bucket: '🎉 CORRECT!',
       isCorrect: true,
     };
     return jsonResponse(response, 200, request, env);
@@ -445,13 +430,11 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
   try {
     const similarity = await getEnsembleSimilarity(guess, secret, env);
     const score = similarityToScore(similarity);
-    const bucket = getBucket(score);
 
     const response: ScoreResponse = {
       guess,
       similarity: Math.round(similarity * 1000) / 1000,
       score,
-      bucket,
       isCorrect: false,
     };
 
