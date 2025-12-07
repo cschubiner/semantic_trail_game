@@ -31,9 +31,10 @@ const ESTIMATED_COST_PER_RERANK_CENTS = 0.05; // Conservative estimate
 // Estimate ~300 tokens per hint call = ~0.5 cents
 const ESTIMATED_COST_PER_HINT_CENTS = 0.5;
 
-// Similarity to score mapping (same as Python version)
-const MIN_SIM = 0.20;
-const MAX_SIM = 0.85;
+// Similarity to score mapping (non-linear)
+const MIN_SIM = 0.10; // anything below this is ~0
+const MAX_SIM = 0.80; // anything above this is ~100
+const SCORE_CURVE = 1.75; // >1 makes scores drop off faster (fewer "Warm" results)
 
 const EASTERN_FORMATTER = new Intl.DateTimeFormat('en-US', {
   timeZone: 'America/New_York',
@@ -140,7 +141,14 @@ function getCorsHeaders(request: Request, env: Env): Record<string, string> {
 function similarityToScore(similarity: number): number {
   if (similarity >= MAX_SIM) return 100;
   if (similarity <= MIN_SIM) return 0;
-  return Math.round((similarity - MIN_SIM) / (MAX_SIM - MIN_SIM) * 100);
+
+  const normalized = (similarity - MIN_SIM) / (MAX_SIM - MIN_SIM);
+  const curved = Math.pow(normalized, SCORE_CURVE);
+  const score = Math.round(curved * 100);
+
+  if (score < 0) return 0;
+  if (score > 100) return 100;
+  return score;
 }
 
 /**
