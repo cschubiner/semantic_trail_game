@@ -1657,7 +1657,17 @@ let realtimeWs = null;  // WebSocket to OpenAI
 let realtimeToken = null;
 let realtimeTokenExpiry = 0;
 let streamingTranscript = '';  // Running transcript for display
-let pendingQuestions = [];  // Questions waiting to be processed
+
+// Anchor & Append: Smart multi-transcript question combining
+// Sends complete questions immediately, buffers fragments, sends one clean revision
+let currentQuestion = null;  // { id, text, lastUpdated, sent }
+let revisionBuffer = [];     // Fragments waiting to be appended
+let revisionTimer = null;    // Debounce timer for revisions
+
+// Configuration for transcript combining
+const REVISION_WINDOW_MS = 2500;  // How long after Q1 can we append continuations?
+const DEBOUNCE_MS = 600;          // Wait time to stitch fragmented thoughts
+const CONNECTOR_REGEX = /^(like|um|so|and|but|or|because|i mean|you know|specifically|actually|well|basically|essentially)\b/i;
 
 // Questions mode DOM elements (lazy loaded)
 let questionsContainer, audioRecordBtn, audioStatusEl, audioStatusText;
