@@ -41,7 +41,7 @@ const RERANK_MODEL = 'google/gemini-2.5-flash';
 const HINT_MODEL = 'anthropic/claude-sonnet-4.5';
 
 // LLM for answering questions in 20 Questions mode
-const QUESTIONS_ANSWER_MODEL = 'deepseek/deepseek-v3.2-exp';
+const QUESTIONS_ANSWER_MODEL = 'anthropic/claude-haiku-4.5';
 
 // Cost protection: $2/hour budget
 const HOURLY_BUDGET_CENTS = 200; // $2.00 in cents
