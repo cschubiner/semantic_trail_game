@@ -711,14 +711,14 @@ async function answerQuestionWithLLM(
   secret: string,
   env: Env
 ): Promise<{ answer: QuestionAnswer; won: boolean }> {
-  // Check if question directly asks about the secret word
+  // Check if question contains the secret word - instant win!
   const questionLower = question.toLowerCase();
   const secretLower = secret.toLowerCase();
 
-  // Check for win condition: "is it [word]?" pattern
-  const isItPattern = /is\s+it\s+(?:a\s+|an\s+|the\s+)?(\w+)\??$/i;
-  const match = questionLower.match(isItPattern);
-  if (match && match[1] === secretLower) {
+  // Check for win condition: secret word appears anywhere in the question
+  // Use word boundary to avoid partial matches (e.g., "or" in "oracle")
+  const wordBoundaryRegex = new RegExp(`\\b${secretLower}\\b`, 'i');
+  if (wordBoundaryRegex.test(questionLower)) {
     return { answer: 'yes', won: true };
   }
 
