@@ -1657,6 +1657,8 @@ let audioChunksB = [];
 let recordingIntervalA = null;
 let recordingIntervalB = null;
 let audioStream = null;  // Shared audio stream
+let lastTranscriptA = '';  // Store last transcript from Buffer A
+let lastTranscriptB = '';  // Store last transcript from Buffer B
 const RECORDING_INTERVAL_MS = 5000; // 5 seconds per buffer
 const BUFFER_OFFSET_MS = 2500; // 2.5 second offset between buffers
 
@@ -1976,6 +1978,12 @@ async function processAudioBuffer(chunks, mimeType, label) {
       audioStatusText.textContent = 'Processing speech...';
     }
 
+    // Get previous transcript from the other buffer for context
+    const previousTranscript = label === 'A' ? lastTranscriptB : lastTranscriptA;
+
+    // Get recent questions for duplicate detection (last 10)
+    const recentQuestions = qaHistory.slice(-10).map(qa => qa.question);
+
     try {
       const response = await fetch(`${API_BASE}/ask`, {
         method: 'POST',
@@ -1983,6 +1991,8 @@ async function processAudioBuffer(chunks, mimeType, label) {
         body: JSON.stringify({
           audioBase64: base64Audio,
           mimeType: mimeType,
+          previousTranscript: previousTranscript || undefined,
+          recentQuestions: recentQuestions.length > 0 ? recentQuestions : undefined,
           game: currentGameIndex,
         }),
       });
@@ -1992,6 +2002,16 @@ async function processAudioBuffer(chunks, mimeType, label) {
       }
 
       const data = await response.json();
+
+      // Store this transcript for the next buffer's context
+      if (data.transcribedText) {
+        if (label === 'A') {
+          lastTranscriptA = data.transcribedText;
+        } else {
+          lastTranscriptB = data.transcribedText;
+        }
+        console.log(`Stored transcript for Buffer ${label}:`, data.transcribedText.substring(0, 50) + '...');
+      }
 
       // Show transcription preview
       if (data.transcribedText && data.transcribedText.trim()) {

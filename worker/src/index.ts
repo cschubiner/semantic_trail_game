@@ -164,6 +164,8 @@ interface AskRequest {
   audioBase64?: string;
   mimeType?: string;
   textQuestions?: string[];
+  previousTranscript?: string;  // Previous buffer's transcript for context
+  recentQuestions?: string[];   // Last 10 questions for duplicate detection
   game?: number;
 }
 
@@ -629,7 +631,7 @@ async function transcribeAudio(
 }
 
 /**
- * Parse natural language text into discrete questions using Gemini
+ * Parse natural language text into discrete questions using DeepSeek
  */
 async function parseQuestionsWithLLM(text: string, env: Env): Promise<string[]> {
   const prompt = `Extract all questions from this transcribed speech.
@@ -652,7 +654,7 @@ Example output: {"questions": ["Is it an animal?", "Does it have four legs?", "C
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: RERANK_MODEL,
+      model: QUESTIONS_ANSWER_MODEL,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 500,
@@ -679,6 +681,65 @@ Example output: {"questions": ["Is it an animal?", "Does it have four legs?", "C
   } catch {
     console.error('Failed to parse questions JSON:', content);
     return [];
+  }
+}
+
+/**
+ * Check if a question is a duplicate of recently asked questions using Gemini
+ */
+async function checkDuplicateQuestion(
+  newQuestion: string,
+  recentQuestions: string[],
+  env: Env
+): Promise<boolean> {
+  if (recentQuestions.length === 0) return false;
+
+  const recentList = recentQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n');
+
+  const prompt = `Determine if the new question is essentially asking the same thing as any of the recent questions.
+Consider semantic similarity - questions worded differently but asking the same thing ARE duplicates.
+
+Recent questions:
+${recentList}
+
+New question: "${newQuestion}"
+
+Is this new question a duplicate of any recent question?
+Respond with ONLY a JSON object: {"isDuplicate": true} or {"isDuplicate": false}`;
+
+  const response = await fetch(OPENROUTER_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: RERANK_MODEL, // Gemini 2.5 Flash for duplicate detection
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 50,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  if (!response.ok) {
+    console.error('Duplicate check LLM error:', await response.text());
+    return false; // On error, assume not duplicate
+  }
+
+  const data = await response.json() as { choices: Array<{ message: { content: string } }> };
+  const content = data.choices[0]?.message?.content || '{"isDuplicate":false}';
+
+  try {
+    let jsonStr = content.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    }
+    const parsed = JSON.parse(jsonStr);
+    return parsed.isDuplicate === true;
+  } catch {
+    console.error('Failed to parse duplicate check JSON:', content);
+    return false;
   }
 }
 
@@ -771,7 +832,7 @@ Respond with ONLY a JSON object: {"answer": "your_answer_here"}`;
 
 /**
  * Handle POST /ask - Combined endpoint for Questions mode
- * Handles transcription, parsing, and answering in one call
+ * Handles transcription, parsing, duplicate detection, and answering
  */
 async function handleAsk(request: Request, env: Env): Promise<Response> {
   let body: AskRequest;
@@ -783,6 +844,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
 
   const gameIndex = body.game ?? 0;
   const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
+  const recentQuestions = body.recentQuestions || [];
 
   const allQuestions: string[] = [...(body.textQuestions || [])];
   let transcribedText: string | undefined;
@@ -806,11 +868,16 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   }
 
   // Step 2: Parse transcribed text into questions
+  // Combine with previous transcript for better context
   if (transcribedText && transcribedText.trim() && !rateLimited) {
     const canParse = await checkAndIncrementCost(env, ESTIMATED_COST_PER_PARSE_CENTS);
     if (canParse) {
       try {
-        const parsedQuestions = await parseQuestionsWithLLM(transcribedText, env);
+        // Combine previous transcript with current for more context
+        const combinedText = body.previousTranscript
+          ? `${body.previousTranscript} ${transcribedText}`
+          : transcribedText;
+        const parsedQuestions = await parseQuestionsWithLLM(combinedText, env);
         allQuestions.push(...parsedQuestions);
       } catch (e) {
         console.error('Parse questions error:', e);
@@ -820,7 +887,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Step 3: Answer each question
+  // Step 3: Answer each question (with duplicate detection)
   const answers: Array<{ question: string; answer: QuestionAnswer }> = [];
 
   for (const question of allQuestions) {
@@ -829,6 +896,22 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
       break;
     }
 
+    // Step 3a: Check for duplicate question using Gemini
+    const canCheckDuplicate = await checkAndIncrementCost(env, ESTIMATED_COST_PER_PARSE_CENTS);
+    if (canCheckDuplicate) {
+      try {
+        const isDuplicate = await checkDuplicateQuestion(question, recentQuestions, env);
+        if (isDuplicate) {
+          console.log(`Skipping duplicate question: "${question}"`);
+          continue; // Skip this question, don't answer it
+        }
+      } catch (e) {
+        console.error('Duplicate check error:', e);
+        // On error, continue to answer the question
+      }
+    }
+
+    // Step 3b: Answer the question
     const canAnswer = await checkAndIncrementCost(env, ESTIMATED_COST_PER_ANSWER_CENTS);
     if (!canAnswer) {
       rateLimited = true;
