@@ -14,6 +14,12 @@
       <p class="subtitle">Find the secret word using semantic similarity!</p>
     </header>
 
+    <!-- Mode Toggle -->
+    <div class="mode-toggle">
+      <button id="mode-similarity" class="mode-btn active">Similarity</button>
+      <button id="mode-questions" class="mode-btn">20 Questions</button>
+    </div>
+
     <main>
       <!-- Status message area -->
       <div id="status" class="status"></div>
@@ -108,8 +114,8 @@
         <p id="no-guesses" class="no-guesses">No guesses yet. Start typing!</p>
       </div>
 
-      <!-- Help/commands -->
-      <div class="help-section">
+      <!-- Help/commands (Similarity mode) -->
+      <div id="similarity-help" class="help-section">
         <p><strong>How to play:</strong> Guess a word. You'll see a score (0-100) based on semantic similarity.</p>
         <p>Higher scores mean you're closer to the secret word!</p>
         <div class="bucket-legend">
@@ -121,6 +127,65 @@
           <span class="bucket freezing">Freezing (0-19)</span>
         </div>
       </div>
+
+      <!-- ===================== QUESTIONS MODE ===================== -->
+      <div id="questions-container" class="questions-container hidden">
+        <!-- Audio Recording Status -->
+        <div id="audio-status" class="audio-status">
+          <div class="audio-indicator" id="audio-indicator"></div>
+          <span id="audio-status-text">Click to start recording</span>
+        </div>
+
+        <!-- Audio Control Button -->
+        <button id="audio-record-btn" class="audio-record-btn">
+          <span class="record-icon">&#x23FA;</span>
+          Start Recording
+        </button>
+
+        <!-- Question Text Input -->
+        <div class="question-input-area">
+          <input
+            type="text"
+            id="question-input"
+            placeholder="Type your question (e.g., Is it alive?)"
+            autocomplete="off"
+          />
+          <button id="ask-btn">Ask</button>
+        </div>
+
+        <!-- Transcription Preview -->
+        <div id="transcription-preview" class="transcription-preview hidden">
+          <span class="preview-label">Heard:</span>
+          <span id="transcription-text"></span>
+        </div>
+
+        <!-- Q&A History -->
+        <div class="qa-history-container">
+          <div id="qa-history" class="qa-history">
+            <p id="no-questions" class="no-questions">No questions yet. Start asking!</p>
+          </div>
+        </div>
+
+        <!-- Question Count -->
+        <div class="question-count">
+          Questions asked: <span id="question-count">0</span>
+        </div>
+
+        <!-- Help section for Questions mode -->
+        <div class="help-section questions-help">
+          <p><strong>How to play:</strong> Ask yes/no questions to guess the secret word (like 20 Questions).</p>
+          <p>You can speak questions into the microphone or type them.</p>
+          <p>When you think you know the answer, ask "Is it [word]?"</p>
+          <div class="answer-legend">
+            <span class="answer-tag answer-yes">YES</span>
+            <span class="answer-tag answer-no">NO</span>
+            <span class="answer-tag answer-maybe">MAYBE</span>
+            <span class="answer-tag answer-close">SO CLOSE</span>
+            <span class="answer-tag answer-na">N/A</span>
+          </div>
+        </div>
+      </div>
+      <!-- ===================== END QUESTIONS MODE ===================== -->
     </main>
 
     <footer>

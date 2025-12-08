@@ -1346,8 +1346,636 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+// ============================================================
+// Questions Mode
+// ============================================================
+
+// Questions mode state
+let currentMode = 'similarity'; // 'similarity' or 'questions'
+let qaHistory = []; // Array of { question, answer, timestamp, won }
+let questionsWon = false;
+let questionsSecretWord = null;
+
+// Audio recording state
+let isRecording = false;
+let mediaRecorder = null;
+let audioChunks = [];
+let recordingInterval = null;
+const RECORDING_INTERVAL_MS = 10000; // 10 seconds
+
+// Questions mode DOM elements (lazy loaded)
+let questionsContainer, audioRecordBtn, audioStatusEl, audioStatusText;
+let audioIndicator, questionInput, askBtn, qaHistoryEl, noQuestionsEl;
+let transcriptionPreview, transcriptionText, questionCountEl;
+let modeSimBtn, modeQuestionsBtn;
+
+/**
+ * Initialize Questions mode DOM references
+ */
+function initQuestionsModeDOM() {
+  questionsContainer = document.getElementById('questions-container');
+  audioRecordBtn = document.getElementById('audio-record-btn');
+  audioStatusEl = document.getElementById('audio-status');
+  audioStatusText = document.getElementById('audio-status-text');
+  audioIndicator = document.getElementById('audio-indicator');
+  questionInput = document.getElementById('question-input');
+  askBtn = document.getElementById('ask-btn');
+  qaHistoryEl = document.getElementById('qa-history');
+  noQuestionsEl = document.getElementById('no-questions');
+  transcriptionPreview = document.getElementById('transcription-preview');
+  transcriptionText = document.getElementById('transcription-text');
+  questionCountEl = document.getElementById('question-count');
+  modeSimBtn = document.getElementById('mode-similarity');
+  modeQuestionsBtn = document.getElementById('mode-questions');
+
+  // Set up event listeners
+  if (audioRecordBtn) {
+    audioRecordBtn.addEventListener('click', toggleRecording);
+  }
+  if (askBtn) {
+    askBtn.addEventListener('click', () => submitQuestion());
+  }
+  if (questionInput) {
+    questionInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') submitQuestion();
+    });
+  }
+  if (modeSimBtn) {
+    modeSimBtn.addEventListener('click', () => switchMode('similarity'));
+  }
+  if (modeQuestionsBtn) {
+    modeQuestionsBtn.addEventListener('click', () => switchMode('questions'));
+  }
+}
+
+/**
+ * Switch between Similarity and Questions modes
+ */
+function switchMode(mode) {
+  currentMode = mode;
+
+  // Update toggle buttons
+  if (modeSimBtn) modeSimBtn.classList.toggle('active', mode === 'similarity');
+  if (modeQuestionsBtn) modeQuestionsBtn.classList.toggle('active', mode === 'questions');
+
+  // Elements to show/hide
+  const similarityElements = [
+    document.querySelector('.input-area'),
+    document.querySelector('.hint-buttons'),
+    document.querySelector('.guess-table-container'),
+    document.getElementById('recent-guesses'),
+    document.getElementById('similarity-help'),
+    document.getElementById('mic-status'),
+  ];
+
+  if (mode === 'similarity') {
+    // Show similarity mode elements
+    similarityElements.forEach(el => el?.classList.remove('hidden'));
+    if (questionsContainer) questionsContainer.classList.add('hidden');
+
+    // Stop recording if active
+    if (isRecording) {
+      stopRecording();
+    }
+  } else {
+    // Show questions mode elements
+    similarityElements.forEach(el => el?.classList.add('hidden'));
+    if (questionsContainer) questionsContainer.classList.remove('hidden');
+
+    // Stop similarity mode mic if active
+    if (micShouldBeActive) {
+      micShouldBeActive = false;
+      try { recognition?.abort(); } catch (e) {}
+      micBtn?.classList.remove('listening');
+    }
+
+    // Render Q&A history
+    renderQAHistory();
+  }
+
+  saveGameState();
+}
+
+// ============================================================
+// Audio Recording (MediaRecorder API)
+// ============================================================
+
+/**
+ * Initialize MediaRecorder for audio capture
+ */
+async function initMediaRecorder() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+    // Prefer webm for better browser support
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+      ? 'audio/webm'
+      : MediaRecorder.isTypeSupported('audio/mp4')
+        ? 'audio/mp4'
+        : 'audio/webm';
+
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        audioChunks.push(event.data);
+      }
+    };
+
+    mediaRecorder.onstop = async () => {
+      if (audioChunks.length > 0) {
+        await processAudioChunks();
+      }
+      audioChunks = [];
+    };
+
+    return true;
+  } catch (error) {
+    console.error('Failed to initialize MediaRecorder:', error);
+    showStatus('Microphone access denied', 'error');
+    return false;
+  }
+}
+
+/**
+ * Toggle audio recording on/off
+ */
+async function toggleRecording() {
+  if (isRecording) {
+    stopRecording();
+  } else {
+    await startRecording();
+  }
+}
+
+/**
+ * Start continuous audio recording
+ */
+async function startRecording() {
+  if (questionsWon) {
+    showStatus('Game already won! Start a new game.', 'info');
+    return;
+  }
+
+  if (!mediaRecorder) {
+    const success = await initMediaRecorder();
+    if (!success) return;
+  }
+
+  isRecording = true;
+  audioChunks = [];
+
+  try {
+    mediaRecorder.start();
+  } catch (e) {
+    console.error('Failed to start recording:', e);
+    isRecording = false;
+    return;
+  }
+
+  // Update UI
+  audioRecordBtn.classList.add('recording');
+  audioRecordBtn.innerHTML = '<span class="record-icon">&#x23F9;</span> Stop Recording';
+  audioIndicator.classList.add('active');
+  audioStatusText.textContent = 'Recording... (sends every 10s)';
+
+  // Start timer on first recording if not started
+  if (!timerStarted) {
+    startTimer();
+  }
+
+  // Set up interval to send audio every 10 seconds
+  recordingInterval = setInterval(() => {
+    if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+      // Small delay then restart
+      setTimeout(() => {
+        if (isRecording && !questionsWon) {
+          audioChunks = [];
+          try {
+            mediaRecorder.start();
+          } catch (e) {
+            console.error('Failed to restart recording:', e);
+          }
+        }
+      }, 100);
+    }
+  }, RECORDING_INTERVAL_MS);
+}
+
+/**
+ * Stop audio recording
+ */
+function stopRecording() {
+  if (!isRecording) return;
+
+  isRecording = false;
+
+  if (recordingInterval) {
+    clearInterval(recordingInterval);
+    recordingInterval = null;
+  }
+
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    try {
+      mediaRecorder.stop();
+    } catch (e) {
+      console.error('Error stopping recording:', e);
+    }
+  }
+
+  // Update UI
+  audioRecordBtn.classList.remove('recording');
+  audioRecordBtn.innerHTML = '<span class="record-icon">&#x23FA;</span> Start Recording';
+  audioIndicator.classList.remove('active');
+  audioStatusText.textContent = 'Click to start recording';
+}
+
+/**
+ * Process recorded audio chunks and send to backend
+ */
+async function processAudioChunks() {
+  if (audioChunks.length === 0 || questionsWon) return;
+
+  const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+
+  // Convert to base64
+  const reader = new FileReader();
+  reader.readAsDataURL(audioBlob);
+
+  reader.onloadend = async () => {
+    const base64Data = reader.result;
+    const base64Audio = base64Data.split(',')[1]; // Remove data:audio/webm;base64, prefix
+
+    audioStatusText.textContent = 'Processing speech...';
+
+    try {
+      const response = await fetch(`${API_BASE}/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audioBase64: base64Audio,
+          mimeType: mediaRecorder.mimeType,
+          game: currentGameIndex,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to process audio');
+      }
+
+      const data = await response.json();
+
+      // Show transcription preview
+      if (data.transcribedText) {
+        transcriptionText.textContent = data.transcribedText;
+        transcriptionPreview.classList.remove('hidden');
+        setTimeout(() => transcriptionPreview.classList.add('hidden'), 5000);
+      }
+
+      // Add answers to history
+      for (const qa of data.answers) {
+        addQAToHistory(qa.question, qa.answer, data.won);
+      }
+
+      // Check for win
+      if (data.won) {
+        handleQuestionsWin(data.secretWord);
+      }
+
+      if (data.rateLimited) {
+        showStatus('Rate limited - try again in a minute', 'info');
+      }
+
+    } catch (error) {
+      console.error('Error processing audio:', error);
+      showStatus('Failed to process speech', 'error');
+    } finally {
+      if (isRecording) {
+        audioStatusText.textContent = 'Recording... (sends every 10s)';
+      }
+    }
+  };
+}
+
+// ============================================================
+// Question Submission
+// ============================================================
+
+/**
+ * Submit a typed question
+ */
+async function submitQuestion(questionText = null) {
+  const question = (questionText || questionInput?.value || '').trim();
+
+  if (!question) return;
+
+  if (questionInput) questionInput.value = '';
+
+  if (questionsWon) {
+    showStatus('Game already won! Start a new game.', 'info');
+    return;
+  }
+
+  // Start timer on first question
+  if (!timerStarted) {
+    startTimer();
+  }
+
+  showStatus('Asking...', 'info');
+
+  try {
+    const response = await fetch(`${API_BASE}/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        textQuestions: [question],
+        game: currentGameIndex,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to get answer');
+    }
+
+    const data = await response.json();
+
+    if (data.answers && data.answers.length > 0) {
+      const qa = data.answers[0];
+      addQAToHistory(qa.question, qa.answer, data.won);
+      showStatus('', '');
+    }
+
+    // Check for win
+    if (data.won) {
+      handleQuestionsWin(data.secretWord);
+    }
+
+    if (data.rateLimited) {
+      showStatus('Rate limited - try again later', 'info');
+    }
+
+  } catch (error) {
+    console.error('Error asking question:', error);
+    showStatus('Failed to get answer', 'error');
+  }
+}
+
+/**
+ * Add a Q&A pair to history
+ */
+function addQAToHistory(question, answer, won = false) {
+  qaHistory.push({
+    question,
+    answer,
+    timestamp: Date.now(),
+    won
+  });
+
+  renderQAHistory();
+  saveGameState();
+}
+
+/**
+ * Render Q&A history
+ */
+function renderQAHistory() {
+  if (!qaHistoryEl || !noQuestionsEl) return;
+
+  if (qaHistory.length === 0) {
+    noQuestionsEl.classList.remove('hidden');
+    questionCountEl.textContent = '0';
+    qaHistoryEl.innerHTML = '<p id="no-questions" class="no-questions">No questions yet. Start asking!</p>';
+    return;
+  }
+
+  noQuestionsEl.classList.add('hidden');
+  questionCountEl.textContent = qaHistory.length;
+
+  // Render most recent first
+  const reversed = [...qaHistory].reverse();
+
+  qaHistoryEl.innerHTML = reversed.map((qa, idx) => {
+    const answerClass = getAnswerClass(qa.answer);
+    const wonClass = qa.won ? ' won' : '';
+    const questionNum = qaHistory.length - idx;
+
+    return `
+      <div class="qa-item${wonClass}">
+        <div class="qa-number">#${questionNum}</div>
+        <div class="qa-content">
+          <div class="qa-question">${escapeHtml(qa.question)}</div>
+          <div class="qa-answer ${answerClass}">${qa.answer.toUpperCase()}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+/**
+ * Get CSS class for answer
+ */
+function getAnswerClass(answer) {
+  switch (answer.toLowerCase()) {
+    case 'yes': return 'answer-yes';
+    case 'no': return 'answer-no';
+    case 'maybe': return 'answer-maybe';
+    case 'so close': return 'answer-close';
+    default: return 'answer-na';
+  }
+}
+
+/**
+ * Handle winning in Questions mode
+ */
+function handleQuestionsWin(secretWord) {
+  questionsWon = true;
+  questionsSecretWord = secretWord;
+
+  // Stop recording
+  stopRecording();
+
+  // Stop timer
+  stopTimer();
+  const elapsed = getElapsedSeconds();
+  const finalTier = getCurrentTier(elapsed);
+
+  // Show win banner
+  winWord.textContent = secretWord.toUpperCase();
+  winGuesses.textContent = qaHistory.length + ' questions';
+  winTime.textContent = formatTime(elapsed);
+  winTierEl.textContent = `${finalTier.emoji} ${finalTier.name}`;
+  winTierEl.style.color = finalTier.color;
+  winBanner.classList.remove('hidden');
+
+  showStatus('You got it!', 'success');
+  saveGameState();
+}
+
+/**
+ * Reset Questions mode state
+ */
+function resetQuestionsMode() {
+  qaHistory = [];
+  questionsWon = false;
+  questionsSecretWord = null;
+  stopRecording();
+  renderQAHistory();
+}
+
+// ============================================================
+// Updated Save/Load for Questions Mode
+// ============================================================
+
+// Override saveGameState to include Questions mode
+const originalSaveGameState = saveGameState;
+saveGameState = function() {
+  const state = {
+    guesses,
+    recentAttempts,
+    gameWon,
+    timerStarted,
+    timerStartTime,
+    timerPenaltyMs,
+    finalTime,
+    rerankGroupId,
+    lastGuessTime,
+    currentGameIndex,
+    // Questions mode state
+    currentMode,
+    qaHistory,
+    questionsWon,
+    questionsSecretWord,
+  };
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    console.error('Failed to save game state:', e);
+  }
+};
+
+// Override loadGameState to restore Questions mode
+const originalLoadGameState = loadGameState;
+loadGameState = function() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return false;
+
+    const state = JSON.parse(saved);
+    guesses = state.guesses || [];
+    recentAttempts = state.recentAttempts || [];
+    gameWon = state.gameWon || false;
+    timerStarted = state.timerStarted || false;
+    timerStartTime = state.timerStartTime;
+    timerPenaltyMs = state.timerPenaltyMs || 0;
+    finalTime = state.finalTime;
+    rerankGroupId = state.rerankGroupId || 0;
+    lastGuessTime = state.lastGuessTime;
+    currentGameIndex = state.currentGameIndex || 0;
+
+    // Questions mode state
+    currentMode = state.currentMode || 'similarity';
+    qaHistory = state.qaHistory || [];
+    questionsWon = state.questionsWon || false;
+    questionsSecretWord = state.questionsSecretWord || null;
+
+    return true;
+  } catch (e) {
+    console.error('Failed to load game state:', e);
+    return false;
+  }
+};
+
+// Override resetGame to also reset Questions mode
+const originalResetGame = resetGame;
+resetGame = function() {
+  guesses = [];
+  recentAttempts = [];
+  gameWon = false;
+  guessQueue = [];
+  winBanner.classList.add('hidden');
+  hintDisplay.classList.add('hidden');
+  hintDisplay.textContent = '';
+  resetTimer();
+  resetRerankState();
+  resetQuestionsMode();
+  setInputDisabled(false);
+  showStatus('Game reset!', 'success');
+  renderGuesses();
+  renderQAHistory();
+  saveGameState();
+
+  if (currentMode === 'similarity') {
+    guessInput.focus();
+  } else if (questionInput) {
+    questionInput.focus();
+  }
+
+  setTimeout(() => {
+    if (!gameWon && !questionsWon) showStatus('', '');
+  }, 2000);
+};
+
+// Override newRandomGame to also reset Questions mode
+const originalNewRandomGame = newRandomGame;
+newRandomGame = function() {
+  currentGameIndex = Math.floor(Math.random() * 1_000_000_000) + 1;
+  guesses = [];
+  recentAttempts = [];
+  gameWon = false;
+  guessQueue = [];
+  winBanner.classList.add('hidden');
+  hintDisplay.classList.add('hidden');
+  hintDisplay.textContent = '';
+  resetTimer();
+  resetRerankState();
+  resetQuestionsMode();
+  setInputDisabled(false);
+  showStatus('New random word!', 'success');
+  renderGuesses();
+  renderQAHistory();
+  saveGameState();
+
+  if (currentMode === 'similarity') {
+    guessInput.focus();
+  } else if (questionInput) {
+    questionInput.focus();
+  }
+
+  setTimeout(() => {
+    if (!gameWon && !questionsWon) showStatus('', '');
+  }, 2000);
+};
+
+// Initialize Questions mode on DOMContentLoaded
+document.addEventListener('DOMContentLoaded', () => {
+  initQuestionsModeDOM();
+
+  // Restore mode from saved state
+  if (currentMode === 'questions') {
+    switchMode('questions');
+
+    // Restore Questions win state
+    if (questionsWon && questionsSecretWord) {
+      const elapsed = getElapsedSeconds();
+      const finalTier = getCurrentTier(elapsed);
+      winWord.textContent = questionsSecretWord.toUpperCase();
+      winGuesses.textContent = qaHistory.length + ' questions';
+      winTime.textContent = formatTime(elapsed);
+      winTierEl.textContent = `${finalTier.emoji} ${finalTier.name}`;
+      winTierEl.style.color = finalTier.color;
+      winBanner.classList.remove('hidden');
+      timerDisplay.classList.remove('hidden');
+      updateTimerDisplay();
+    }
+  }
+});
+
 // Expose functions to window for button onclick
 window.resetGame = resetGame;
 window.newRandomGame = newRandomGame;
 window.submitGuess = submitGuess;
 window.startMicGuess = startMicGuess;
+window.switchMode = switchMode;
+window.toggleRecording = toggleRecording;
+window.submitQuestion = submitQuestion;

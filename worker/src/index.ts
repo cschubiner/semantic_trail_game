@@ -49,6 +49,17 @@ const ESTIMATED_COST_PER_RERANK_CENTS = 0.05; // Conservative estimate
 // Estimate ~300 tokens per hint call = ~0.5 cents
 const ESTIMATED_COST_PER_HINT_CENTS = 0.5;
 
+// Questions mode cost estimates
+// Whisper pricing: $0.006 per minute of audio, 10s = ~$0.001 = 0.1 cents
+const ESTIMATED_COST_PER_TRANSCRIBE_CENTS = 0.15;
+// Gemini 2.5 Flash for question parsing: ~200 tokens = ~0.02 cents
+const ESTIMATED_COST_PER_PARSE_CENTS = 0.03;
+// Gemini 2.5 Flash for question answering: ~300 tokens = ~0.03 cents
+const ESTIMATED_COST_PER_ANSWER_CENTS = 0.05;
+
+// OpenAI Whisper API
+const OPENAI_WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
+
 // Similarity to score mapping (non-linear)
 // Piecewise similarity->score mapping tuned for numeric words (less generous)
 // Control points are linearly interpolated; adjust to retune.
@@ -76,6 +87,7 @@ interface Env {
   EMBED_CACHE: KVNamespace;
   EMBEDDINGS_BUCKET?: R2Bucket; // Optional R2 bucket for precomputed embeddings
   OPENROUTER_API_KEY: string;
+  OPENAI_API_KEY?: string; // For Whisper transcription (Questions mode)
   SECRET_SALT: string;
   ALLOWED_ORIGINS?: string;
 }
@@ -138,6 +150,29 @@ interface LLMHintRequest {
 interface LLMHintResponse {
   hint: string;
   rateLimited?: boolean;
+}
+
+// === Questions Mode Types ===
+
+type QuestionAnswer = 'yes' | 'no' | 'maybe' | 'so close' | 'N/A';
+
+interface AskRequest {
+  audioBase64?: string;
+  mimeType?: string;
+  textQuestions?: string[];
+  game?: number;
+}
+
+interface AskResponse {
+  transcribedText?: string;
+  answers: Array<{
+    question: string;
+    answer: QuestionAnswer;
+  }>;
+  rateLimited?: boolean;
+  won?: boolean;
+  secretWord?: string;
+  error?: string;
 }
 
 /**
@@ -517,6 +552,276 @@ Be precise and consistent. Output valid JSON only, no explanation.`;
   }));
 }
 
+// === Questions Mode Functions ===
+
+/**
+ * Transcribe audio using OpenAI Whisper API
+ */
+async function transcribeAudio(
+  audioBase64: string,
+  mimeType: string,
+  env: Env
+): Promise<string> {
+  if (!env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY not configured');
+  }
+
+  // Convert base64 to binary
+  const binaryString = atob(audioBase64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+
+  // Determine file extension from mime type
+  const ext = mimeType.includes('webm') ? 'webm' : mimeType.includes('mp4') ? 'mp4' : 'webm';
+
+  // Create form data for Whisper API
+  const formData = new FormData();
+  const blob = new Blob([bytes], { type: mimeType });
+  formData.append('file', blob, `audio.${ext}`);
+  formData.append('model', 'whisper-1');
+  formData.append('language', 'en');
+
+  const response = await fetch(OPENAI_WHISPER_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Whisper API error: ${response.status} - ${text}`);
+  }
+
+  const data = await response.json() as { text: string };
+  return data.text;
+}
+
+/**
+ * Parse natural language text into discrete questions using Gemini
+ */
+async function parseQuestionsWithLLM(text: string, env: Env): Promise<string[]> {
+  const prompt = `Extract all questions from this transcribed speech.
+Return ONLY questions that are asking about properties or characteristics of something (yes/no questions).
+Ignore statements, commands, or off-topic content.
+Clean up any transcription errors to make proper questions.
+
+Transcribed text: "${text}"
+
+Respond with a JSON object with a "questions" array containing the extracted questions.
+If no valid questions found, return {"questions": []}
+
+Example input: "is it an animal um does it have four legs what about can it fly"
+Example output: {"questions": ["Is it an animal?", "Does it have four legs?", "Can it fly?"]}`;
+
+  const response = await fetch(OPENROUTER_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: RERANK_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 500,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  if (!response.ok) {
+    console.error('Parse questions LLM error:', await response.text());
+    return [];
+  }
+
+  const data = await response.json() as { choices: Array<{ message: { content: string } }> };
+  const content = data.choices[0]?.message?.content || '{"questions":[]}';
+
+  try {
+    // Handle potential markdown code blocks
+    let jsonStr = content.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    }
+    const parsed = JSON.parse(jsonStr);
+    return parsed.questions || [];
+  } catch {
+    console.error('Failed to parse questions JSON:', content);
+    return [];
+  }
+}
+
+/**
+ * Answer a single question about the secret word using Gemini
+ * Returns the answer and whether the player won
+ */
+async function answerQuestionWithLLM(
+  question: string,
+  secret: string,
+  env: Env
+): Promise<{ answer: QuestionAnswer; won: boolean }> {
+  // Check if question directly asks about the secret word
+  const questionLower = question.toLowerCase();
+  const secretLower = secret.toLowerCase();
+
+  // Check for win condition: "is it [word]?" pattern
+  const isItPattern = /is\s+it\s+(?:a\s+|an\s+|the\s+)?(\w+)\??$/i;
+  const match = questionLower.match(isItPattern);
+  if (match && match[1] === secretLower) {
+    return { answer: 'yes', won: true };
+  }
+
+  const prompt = `You are playing a word guessing game (like 20 Questions). The secret word is "${secret}".
+
+The player asks: "${question}"
+
+Answer with ONLY one of these responses:
+- "yes" - if the answer is clearly yes
+- "no" - if the answer is clearly no
+- "maybe" - if the answer is uncertain, partially true, or depends on context
+- "so close" - ONLY if the question reveals they are VERY close to guessing (e.g., asking about a very specific category the word belongs to, or a near-synonym)
+- "N/A" - if the question cannot be answered with yes/no, is unclear, or is not relevant
+
+Be accurate and helpful. The goal is for the player to guess the word.
+
+Respond with ONLY a JSON object: {"answer": "your_answer_here"}`;
+
+  const response = await fetch(OPENROUTER_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: RERANK_MODEL,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.1,
+      max_tokens: 50,
+      response_format: { type: 'json_object' },
+    }),
+  });
+
+  if (!response.ok) {
+    console.error('Answer question LLM error:', await response.text());
+    return { answer: 'N/A', won: false };
+  }
+
+  const data = await response.json() as { choices: Array<{ message: { content: string } }> };
+  const content = data.choices[0]?.message?.content || '{"answer":"N/A"}';
+
+  try {
+    let jsonStr = content.trim();
+    if (jsonStr.startsWith('```')) {
+      jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+    }
+    const parsed = JSON.parse(jsonStr);
+    const answer = parsed.answer as QuestionAnswer;
+    // Validate answer is one of the allowed values
+    const validAnswers: QuestionAnswer[] = ['yes', 'no', 'maybe', 'so close', 'N/A'];
+    if (!validAnswers.includes(answer)) {
+      return { answer: 'N/A', won: false };
+    }
+    return { answer, won: false };
+  } catch {
+    console.error('Failed to parse answer JSON:', content);
+    return { answer: 'N/A', won: false };
+  }
+}
+
+/**
+ * Handle POST /ask - Combined endpoint for Questions mode
+ * Handles transcription, parsing, and answering in one call
+ */
+async function handleAsk(request: Request, env: Env): Promise<Response> {
+  let body: AskRequest;
+  try {
+    body = await request.json() as AskRequest;
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' } as ErrorResponse, 400, request, env);
+  }
+
+  const gameIndex = body.game ?? 0;
+  const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
+
+  const allQuestions: string[] = [...(body.textQuestions || [])];
+  let transcribedText: string | undefined;
+  let rateLimited = false;
+  let won = false;
+  let secretWord: string | undefined;
+
+  // Step 1: If audio provided, transcribe it
+  if (body.audioBase64 && body.mimeType) {
+    const canTranscribe = await checkAndIncrementCost(env, ESTIMATED_COST_PER_TRANSCRIBE_CENTS);
+    if (!canTranscribe) {
+      rateLimited = true;
+    } else {
+      try {
+        transcribedText = await transcribeAudio(body.audioBase64, body.mimeType, env);
+      } catch (e) {
+        console.error('Transcription error:', e);
+        // Continue without transcription, still process text questions
+      }
+    }
+  }
+
+  // Step 2: Parse transcribed text into questions
+  if (transcribedText && transcribedText.trim() && !rateLimited) {
+    const canParse = await checkAndIncrementCost(env, ESTIMATED_COST_PER_PARSE_CENTS);
+    if (canParse) {
+      try {
+        const parsedQuestions = await parseQuestionsWithLLM(transcribedText, env);
+        allQuestions.push(...parsedQuestions);
+      } catch (e) {
+        console.error('Parse questions error:', e);
+      }
+    } else {
+      rateLimited = true;
+    }
+  }
+
+  // Step 3: Answer each question
+  const answers: Array<{ question: string; answer: QuestionAnswer }> = [];
+
+  for (const question of allQuestions) {
+    if (won) {
+      // Already won, skip remaining questions
+      break;
+    }
+
+    const canAnswer = await checkAndIncrementCost(env, ESTIMATED_COST_PER_ANSWER_CENTS);
+    if (!canAnswer) {
+      rateLimited = true;
+      break;
+    }
+
+    try {
+      const result = await answerQuestionWithLLM(question, secret, env);
+      answers.push({ question, answer: result.answer });
+
+      if (result.won) {
+        won = true;
+        secretWord = secret;
+      }
+    } catch (e) {
+      console.error('Answer question error:', e);
+      answers.push({ question, answer: 'N/A' });
+    }
+  }
+
+  const response: AskResponse = {
+    transcribedText,
+    answers,
+    rateLimited,
+    won,
+    secretWord,
+  };
+
+  return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+}
+
 /**
  * Handle POST /score requests
  */
@@ -891,6 +1196,11 @@ export default {
     // LLM hint endpoint
     if (url.pathname === '/llm-hint' && request.method === 'POST') {
       return handleLLMHint(request, env);
+    }
+
+    // Questions mode endpoint
+    if (url.pathname === '/ask' && request.method === 'POST') {
+      return handleAsk(request, env);
     }
 
     // Health check endpoint
