@@ -31,15 +31,21 @@ MODELS = [
     # Gemini models (our current choice)
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
-    # Mistral models (very fast and cheap with structured outputs)
-    "mistralai/ministral-3b-2512",    # $0.10/M tokens - cheapest
-    "mistralai/ministral-8b-2512",    # $0.15/M tokens
-    "mistralai/ministral-14b-2512",   # $0.20/M tokens
+    "google/gemini-2.0-flash-lite-001",
+    # OpenAI models
+    "openai/gpt-4o-mini",
+    "openai/gpt-5-mini",
+    "openai/gpt-5-nano",
+    "openai/gpt-4.1",
+    "openai/gpt-4.1-mini",
+    # Anthropic (Claude Sonnet 4.5 supports structured outputs!)
+    "anthropic/claude-sonnet-4.5",
     # DeepSeek (good accuracy, cheap)
     "deepseek/deepseek-v3.2",
-    # Free options
-    "arcee-ai/trinity-mini:free",
-    # Note: Claude Haiku 4.5 does NOT support structured_outputs on OpenRouter
+    # Mistral models (fast and cheap)
+    "mistralai/ministral-3b-2512",
+    "mistralai/ministral-8b-2512",
+    "mistralai/ministral-14b-2512",
 ]
 
 Answer = Literal["yes", "no", "maybe", "so close", "N/A"]
