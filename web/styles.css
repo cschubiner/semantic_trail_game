@@ -31,7 +31,7 @@ body {
 }
 
 .container {
-  max-width: 700px;
+  max-width: 840px;
   margin: 0 auto;
   padding: 20px;
 }
@@ -884,7 +884,7 @@ footer a:hover {
 
 /* Q&A History */
 .qa-history-container {
-  max-height: 400px;
+  max-height: 600px;
   overflow-y: auto;
   margin-bottom: 15px;
   background: var(--bg-color);
