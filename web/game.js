@@ -1648,19 +1648,16 @@ let qaHistory = []; // Array of { question, answer, timestamp, won }
 let questionsWon = false;
 let questionsSecretWord = null;
 
-// Audio recording state - dual overlapping buffers
+// Audio recording state - WebSocket streaming to OpenAI Realtime API
 let isRecording = false;
-let mediaRecorderA = null;  // Primary recorder
-let mediaRecorderB = null;  // Offset recorder (5s offset)
-let audioChunksA = [];
-let audioChunksB = [];
-let recordingIntervalA = null;
-let recordingIntervalB = null;
-let audioStream = null;  // Shared audio stream
-let lastTranscriptA = '';  // Store last transcript from Buffer A
-let lastTranscriptB = '';  // Store last transcript from Buffer B
-const RECORDING_INTERVAL_MS = 5000; // 5 seconds per buffer
-const BUFFER_OFFSET_MS = 2500; // 2.5 second offset between buffers
+let audioStream = null;
+let audioContext = null;
+let audioWorklet = null;
+let realtimeWs = null;  // WebSocket to OpenAI
+let realtimeToken = null;
+let realtimeTokenExpiry = 0;
+let streamingTranscript = '';  // Running transcript for display
+let pendingQuestions = [];  // Questions waiting to be processed
 
 // Questions mode DOM elements (lazy loaded)
 let questionsContainer, audioRecordBtn, audioStatusEl, audioStatusText;
@@ -1769,56 +1766,275 @@ function switchMode(mode) {
 }
 
 // ============================================================
-// Audio Recording (MediaRecorder API) - Dual Overlapping Buffers
+// Audio Recording - WebSocket Streaming to OpenAI Realtime API
 // ============================================================
 
 /**
- * Get preferred MIME type for audio recording
+ * Get ephemeral token from our backend for OpenAI Realtime API
  */
-function getPreferredMimeType() {
-  if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm';
-  if (MediaRecorder.isTypeSupported('audio/mp4')) return 'audio/mp4';
-  return 'audio/webm';
+async function getRealtimeToken() {
+  // Check if we have a valid token
+  if (realtimeToken && Date.now() < realtimeTokenExpiry - 60000) {
+    return realtimeToken;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/realtime-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to get realtime token');
+    }
+
+    const data = await response.json();
+    realtimeToken = data.clientSecret;
+    realtimeTokenExpiry = data.expiresAt * 1000; // Convert to ms
+    return realtimeToken;
+  } catch (error) {
+    console.error('Error getting realtime token:', error);
+    throw error;
+  }
 }
 
 /**
- * Create a MediaRecorder for a given stream
- */
-function createRecorder(stream, chunks, label) {
-  const mimeType = getPreferredMimeType();
-  const recorder = new MediaRecorder(stream, { mimeType });
-
-  recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) {
-      chunks.push(event.data);
-    }
-  };
-
-  recorder.onstop = async () => {
-    if (chunks.length > 0 && !questionsWon) {
-      const chunksCopy = [...chunks];
-      chunks.length = 0; // Clear the array
-      await processAudioBuffer(chunksCopy, mimeType, label);
-    }
-  };
-
-  return recorder;
-}
-
-/**
- * Initialize audio stream and recorders for dual buffer system
+ * Initialize audio stream and AudioContext for PCM capture
  */
 async function initAudioSystem() {
   try {
-    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaRecorderA = createRecorder(audioStream, audioChunksA, 'A');
-    mediaRecorderB = createRecorder(audioStream, audioChunksB, 'B');
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: 24000,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      }
+    });
+
+    audioContext = new AudioContext({ sampleRate: 24000 });
     return true;
   } catch (error) {
     console.error('Failed to initialize audio system:', error);
     showStatus('Microphone access denied', 'error');
     return false;
   }
+}
+
+/**
+ * Connect to OpenAI Realtime API via WebSocket
+ */
+async function connectRealtimeWebSocket() {
+  try {
+    const token = await getRealtimeToken();
+
+    // Connect with subprotocols for browser auth
+    realtimeWs = new WebSocket(
+      'wss://api.openai.com/v1/realtime?intent=transcription',
+      ['realtime', `openai-insecure-api-key.${token}`, 'openai-beta.realtime-v1']
+    );
+
+    realtimeWs.onopen = () => {
+      console.log('Connected to OpenAI Realtime API');
+
+      // Configure transcription session
+      realtimeWs.send(JSON.stringify({
+        type: 'transcription_session.update',
+        session: {
+          input_audio_format: 'pcm16',
+          input_audio_transcription: {
+            model: 'gpt-4o-mini-transcribe',
+            language: 'en',
+            prompt: 'Transcribe questions in English. The user is asking yes/no questions about a secret word.'
+          },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 800
+          }
+        }
+      }));
+    };
+
+    realtimeWs.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handleRealtimeMessage(data);
+    };
+
+    realtimeWs.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      showStatus('Connection error', 'error');
+    };
+
+    realtimeWs.onclose = () => {
+      console.log('WebSocket closed');
+      if (isRecording) {
+        // Reconnect if still recording
+        setTimeout(() => {
+          if (isRecording && !questionsWon) {
+            connectRealtimeWebSocket();
+          }
+        }, 1000);
+      }
+    };
+
+    return true;
+  } catch (error) {
+    console.error('Failed to connect WebSocket:', error);
+    return false;
+  }
+}
+
+/**
+ * Handle messages from OpenAI Realtime API
+ */
+function handleRealtimeMessage(data) {
+  switch (data.type) {
+    case 'transcription_session.created':
+    case 'transcription_session.updated':
+      console.log('Session configured:', data.type);
+      break;
+
+    case 'conversation.item.input_audio_transcription.delta':
+      // Incremental transcript update
+      if (data.delta) {
+        streamingTranscript += data.delta;
+        updateTranscriptionPreview();
+      }
+      break;
+
+    case 'conversation.item.input_audio_transcription.completed':
+      // Final transcript for this speech segment
+      if (data.transcript) {
+        console.log('Completed transcript:', data.transcript);
+        processCompletedTranscript(data.transcript);
+      }
+      break;
+
+    case 'input_audio_buffer.speech_started':
+      audioStatusText.textContent = 'Listening...';
+      break;
+
+    case 'input_audio_buffer.speech_stopped':
+      audioStatusText.textContent = 'Processing...';
+      break;
+
+    case 'error':
+      console.error('Realtime API error:', data.error);
+      if (data.error?.message) {
+        showStatus(`Error: ${data.error.message}`, 'error');
+      }
+      break;
+
+    default:
+      console.log('Realtime event:', data.type);
+  }
+}
+
+/**
+ * Update the transcription preview with recent 30 words
+ */
+function updateTranscriptionPreview() {
+  if (!transcriptionText || !transcriptionPreview) return;
+
+  // Show last 30 words
+  const words = streamingTranscript.trim().split(/\s+/);
+  const recent = words.slice(-30).join(' ');
+
+  transcriptionText.textContent = recent || 'Listening...';
+  transcriptionPreview.classList.remove('hidden');
+}
+
+/**
+ * Process a completed transcript segment - parse questions and get answers
+ */
+async function processCompletedTranscript(transcript) {
+  if (!transcript || !transcript.trim() || questionsWon) return;
+
+  // Reset streaming transcript for next segment
+  streamingTranscript = '';
+
+  // Send to backend to parse questions and get answers
+  try {
+    const response = await fetch(`${API_BASE}/ask`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        textQuestions: [transcript], // Send raw transcript, backend will parse
+        game: currentGameIndex,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to process transcript');
+    }
+
+    const data = await response.json();
+
+    // Add answers to history
+    for (const qa of data.answers) {
+      const isDuplicate = qaHistory.some(
+        existing => existing.question.toLowerCase() === qa.question.toLowerCase() &&
+                    Date.now() - existing.timestamp < 30000
+      );
+      if (!isDuplicate) {
+        addQAToHistory(qa.question, qa.answer, data.won);
+      }
+    }
+
+    // Check for win
+    if (data.won) {
+      handleQuestionsWin(data.secretWord);
+    }
+
+    if (data.rateLimited) {
+      showStatus('Rate limited - try again in a minute', 'info');
+    }
+
+  } catch (error) {
+    console.error('Error processing transcript:', error);
+  }
+}
+
+/**
+ * Start streaming audio to OpenAI
+ */
+async function startAudioStreaming() {
+  if (!audioContext || !audioStream || !realtimeWs) return;
+
+  const source = audioContext.createMediaStreamSource(audioStream);
+
+  // Create ScriptProcessor for PCM capture (deprecated but widely supported)
+  // AudioWorklet would be better but requires separate file
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+  processor.onaudioprocess = (e) => {
+    if (!isRecording || !realtimeWs || realtimeWs.readyState !== WebSocket.OPEN) return;
+
+    const inputData = e.inputBuffer.getChannelData(0);
+
+    // Convert Float32 to Int16 PCM
+    const pcm16 = new Int16Array(inputData.length);
+    for (let i = 0; i < inputData.length; i++) {
+      const s = Math.max(-1, Math.min(1, inputData[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+
+    // Convert to base64
+    const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)));
+
+    // Send to OpenAI
+    realtimeWs.send(JSON.stringify({
+      type: 'input_audio_buffer.append',
+      audio: base64
+    }));
+  };
+
+  source.connect(processor);
+  processor.connect(audioContext.destination);
+
+  audioWorklet = { source, processor };
 }
 
 /**
@@ -1833,9 +2049,7 @@ async function toggleRecording() {
 }
 
 /**
- * Start continuous audio recording with overlapping buffers
- * Buffer A: 0s-10s, 10s-20s, 20s-30s...
- * Buffer B: 5s-15s, 15s-25s, 25s-35s... (5s offset)
+ * Start streaming recording with OpenAI Realtime API
  */
 async function startRecording() {
   if (questionsWon) {
@@ -1843,111 +2057,75 @@ async function startRecording() {
     return;
   }
 
+  // Update UI immediately
+  audioRecordBtn.classList.add('recording');
+  audioRecordBtn.innerHTML = '<span class="record-icon">&#x23F9;</span> Stop';
+  audioIndicator.classList.add('active');
+  audioStatusText.textContent = 'Connecting...';
+
+  // Initialize audio if needed
   if (!audioStream) {
     const success = await initAudioSystem();
-    if (!success) return;
+    if (!success) {
+      audioRecordBtn.classList.remove('recording');
+      audioRecordBtn.innerHTML = '<span class="record-icon">&#x23FA;</span> Start Recording';
+      audioIndicator.classList.remove('active');
+      return;
+    }
   }
 
-  isRecording = true;
-  audioChunksA = [];
-  audioChunksB = [];
-
-  // Update UI
-  audioRecordBtn.classList.add('recording');
-  audioRecordBtn.innerHTML = '<span class="record-icon">&#x23F9;</span> Stop Recording';
-  audioIndicator.classList.add('active');
-  audioStatusText.textContent = 'Recording... (overlapping buffers)';
-
-  // Start timer on first recording if not started
-  if (!timerStarted) {
-    startTimer();
+  // Resume audio context if suspended
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
   }
 
-  // Start Buffer A immediately
-  try {
-    mediaRecorderA.start();
-    console.log('Buffer A started');
-  } catch (e) {
-    console.error('Failed to start Buffer A:', e);
-    isRecording = false;
+  // Connect to OpenAI
+  const connected = await connectRealtimeWebSocket();
+  if (!connected) {
+    audioRecordBtn.classList.remove('recording');
+    audioRecordBtn.innerHTML = '<span class="record-icon">&#x23FA;</span> Start Recording';
+    audioIndicator.classList.remove('active');
+    audioStatusText.textContent = 'Connection failed';
     return;
   }
 
-  // Start Buffer B after 5 seconds (offset)
-  setTimeout(() => {
-    if (isRecording && !questionsWon) {
-      try {
-        mediaRecorderB.start();
-        console.log('Buffer B started (5s offset)');
-      } catch (e) {
-        console.error('Failed to start Buffer B:', e);
-      }
-    }
-  }, BUFFER_OFFSET_MS);
+  isRecording = true;
+  streamingTranscript = '';
 
-  // Set up interval for Buffer A (every 10s, starting at 10s)
-  recordingIntervalA = setInterval(() => {
-    if (isRecording && mediaRecorderA && mediaRecorderA.state === 'recording') {
-      mediaRecorderA.stop();
-      setTimeout(() => {
-        if (isRecording && !questionsWon) {
-          try {
-            mediaRecorderA.start();
-            console.log('Buffer A restarted');
-          } catch (e) {
-            console.error('Failed to restart Buffer A:', e);
-          }
-        }
-      }, 100);
+  // Wait for WebSocket to be ready, then start streaming
+  const waitForOpen = setInterval(() => {
+    if (realtimeWs && realtimeWs.readyState === WebSocket.OPEN) {
+      clearInterval(waitForOpen);
+      startAudioStreaming();
+      audioStatusText.textContent = 'Streaming... speak your questions';
     }
-  }, RECORDING_INTERVAL_MS);
+  }, 100);
 
-  // Set up interval for Buffer B (every 10s, starting at 15s = 5s offset + 10s)
-  setTimeout(() => {
-    if (isRecording && !questionsWon) {
-      recordingIntervalB = setInterval(() => {
-        if (isRecording && mediaRecorderB && mediaRecorderB.state === 'recording') {
-          mediaRecorderB.stop();
-          setTimeout(() => {
-            if (isRecording && !questionsWon) {
-              try {
-                mediaRecorderB.start();
-                console.log('Buffer B restarted');
-              } catch (e) {
-                console.error('Failed to restart Buffer B:', e);
-              }
-            }
-          }, 100);
-        }
-      }, RECORDING_INTERVAL_MS);
-    }
-  }, BUFFER_OFFSET_MS);
+  // Start timer on first recording
+  if (!timerStarted) {
+    startTimer();
+  }
 }
 
 /**
- * Stop audio recording (both buffers)
+ * Stop streaming recording
  */
 function stopRecording() {
   if (!isRecording) return;
 
   isRecording = false;
 
-  // Clear intervals
-  if (recordingIntervalA) {
-    clearInterval(recordingIntervalA);
-    recordingIntervalA = null;
-  }
-  if (recordingIntervalB) {
-    clearInterval(recordingIntervalB);
-    recordingIntervalB = null;
+  // Stop audio processing
+  if (audioWorklet) {
+    audioWorklet.source.disconnect();
+    audioWorklet.processor.disconnect();
+    audioWorklet = null;
   }
 
-  // Stop both recorders
-  if (mediaRecorderA && mediaRecorderA.state === 'recording') {
-    try { mediaRecorderA.stop(); } catch (e) { console.error('Error stopping A:', e); }
-  }
-  if (mediaRecorderB && mediaRecorderB.state === 'recording') {
-    try { mediaRecorderB.stop(); } catch (e) { console.error('Error stopping B:', e); }
+  // Close WebSocket
+  if (realtimeWs) {
+    realtimeWs.close();
+    realtimeWs = null;
   }
 
   // Update UI
@@ -1955,101 +2133,13 @@ function stopRecording() {
   audioRecordBtn.innerHTML = '<span class="record-icon">&#x23FA;</span> Start Recording';
   audioIndicator.classList.remove('active');
   audioStatusText.textContent = 'Click to start recording';
-}
 
-/**
- * Process an audio buffer and send to backend
- */
-async function processAudioBuffer(chunks, mimeType, label) {
-  if (chunks.length === 0 || questionsWon) return;
-
-  const audioBlob = new Blob(chunks, { type: mimeType });
-
-  // Convert to base64
-  const reader = new FileReader();
-  reader.readAsDataURL(audioBlob);
-
-  reader.onloadend = async () => {
-    const base64Data = reader.result;
-    const base64Audio = base64Data.split(',')[1];
-
-    console.log(`Processing Buffer ${label}...`);
-    if (isRecording) {
-      audioStatusText.textContent = 'Processing speech...';
+  // Hide transcription preview after a delay
+  setTimeout(() => {
+    if (!isRecording && transcriptionPreview) {
+      transcriptionPreview.classList.add('hidden');
     }
-
-    // Get previous transcript from the other buffer for context
-    const previousTranscript = label === 'A' ? lastTranscriptB : lastTranscriptA;
-
-    // Get recent questions for duplicate detection (last 10)
-    const recentQuestions = qaHistory.slice(-10).map(qa => qa.question);
-
-    try {
-      const response = await fetch(`${API_BASE}/ask`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audioBase64: base64Audio,
-          mimeType: mimeType,
-          previousTranscript: previousTranscript || undefined,
-          recentQuestions: recentQuestions.length > 0 ? recentQuestions : undefined,
-          game: currentGameIndex,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to process audio');
-      }
-
-      const data = await response.json();
-
-      // Store this transcript for the next buffer's context
-      if (data.transcribedText) {
-        if (label === 'A') {
-          lastTranscriptA = data.transcribedText;
-        } else {
-          lastTranscriptB = data.transcribedText;
-        }
-        console.log(`Stored transcript for Buffer ${label}:`, data.transcribedText.substring(0, 50) + '...');
-      }
-
-      // Show transcription preview
-      if (data.transcribedText && data.transcribedText.trim()) {
-        transcriptionText.textContent = data.transcribedText;
-        transcriptionPreview.classList.remove('hidden');
-        setTimeout(() => transcriptionPreview.classList.add('hidden'), 5000);
-      }
-
-      // Add answers to history (deduplicate by question text)
-      for (const qa of data.answers) {
-        // Check if we already have this exact question recently
-        const isDuplicate = qaHistory.some(
-          existing => existing.question.toLowerCase() === qa.question.toLowerCase() &&
-                      Date.now() - existing.timestamp < 30000 // Within 30 seconds
-        );
-        if (!isDuplicate) {
-          addQAToHistory(qa.question, qa.answer, data.won);
-        }
-      }
-
-      // Check for win
-      if (data.won) {
-        handleQuestionsWin(data.secretWord);
-      }
-
-      if (data.rateLimited) {
-        showStatus('Rate limited - try again in a minute', 'info');
-      }
-
-    } catch (error) {
-      console.error(`Error processing Buffer ${label}:`, error);
-      showStatus('Failed to process speech', 'error');
-    } finally {
-      if (isRecording) {
-        audioStatusText.textContent = 'Recording... (overlapping buffers)';
-      }
-    }
-  };
+  }, 3000);
 }
 
 // ============================================================

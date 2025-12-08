@@ -64,6 +64,9 @@ const ESTIMATED_COST_PER_ANSWER_CENTS = 0.05;
 const OPENAI_TRANSCRIPTION_URL = 'https://api.openai.com/v1/audio/transcriptions';
 const TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 
+// OpenAI Realtime API for streaming transcription
+const OPENAI_REALTIME_SESSIONS_URL = 'https://api.openai.com/v1/realtime/sessions';
+
 // Similarity to score mapping (non-linear)
 // Piecewise similarity->score mapping tuned for numeric words (less generous)
 // Control points are linearly interpolated; adjust to retune.
@@ -164,8 +167,6 @@ interface AskRequest {
   audioBase64?: string;
   mimeType?: string;
   textQuestions?: string[];
-  previousTranscript?: string;  // Previous buffer's transcript for context
-  recentQuestions?: string[];   // Last 10 questions for duplicate detection
   game?: number;
 }
 
@@ -202,6 +203,14 @@ interface TranscribeGuessResponse {
   transcribedText?: string;
   words: string[];
   rateLimited?: boolean;
+  error?: string;
+}
+
+// === Realtime Token Types ===
+
+interface RealtimeTokenResponse {
+  clientSecret: string;
+  expiresAt: number;
   error?: string;
 }
 
@@ -433,7 +442,7 @@ async function loadR2Embeddings(env: Env): Promise<boolean> {
     const arrayBuffer = await embObj.arrayBuffer();
     r2EmbeddingsData = new Float32Array(arrayBuffer);
 
-    console.log(`R2: Loaded ${Object.keys(r2WordIndex).length} word embeddings`);
+    console.log(`R2: Loaded ${Object.keys(r2WordIndex!).length} word embeddings`);
     return true;
   } catch (e) {
     console.error('Failed to load R2 embeddings:', e);
@@ -685,65 +694,6 @@ Example output: {"questions": ["Is it an animal?", "Does it have four legs?", "C
 }
 
 /**
- * Check if a question is a duplicate of recently asked questions using Gemini
- */
-async function checkDuplicateQuestion(
-  newQuestion: string,
-  recentQuestions: string[],
-  env: Env
-): Promise<boolean> {
-  if (recentQuestions.length === 0) return false;
-
-  const recentList = recentQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n');
-
-  const prompt = `Determine if the new question is essentially asking the same thing as any of the recent questions.
-Consider semantic similarity - questions worded differently but asking the same thing ARE duplicates.
-
-Recent questions:
-${recentList}
-
-New question: "${newQuestion}"
-
-Is this new question a duplicate of any recent question?
-Respond with ONLY a JSON object: {"isDuplicate": true} or {"isDuplicate": false}`;
-
-  const response = await fetch(OPENROUTER_CHAT_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: RERANK_MODEL, // Gemini 2.5 Flash for duplicate detection
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.1,
-      max_tokens: 50,
-      response_format: { type: 'json_object' },
-    }),
-  });
-
-  if (!response.ok) {
-    console.error('Duplicate check LLM error:', await response.text());
-    return false; // On error, assume not duplicate
-  }
-
-  const data = await response.json() as { choices: Array<{ message: { content: string } }> };
-  const content = data.choices[0]?.message?.content || '{"isDuplicate":false}';
-
-  try {
-    let jsonStr = content.trim();
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
-    }
-    const parsed = JSON.parse(jsonStr);
-    return parsed.isDuplicate === true;
-  } catch {
-    console.error('Failed to parse duplicate check JSON:', content);
-    return false;
-  }
-}
-
-/**
  * Answer a single question about the secret word using Gemini
  * Returns the answer and whether the player won
  */
@@ -831,8 +781,63 @@ Respond with ONLY a JSON object: {"answer": "your_answer_here"}`;
 }
 
 /**
- * Handle POST /ask - Combined endpoint for Questions mode
- * Handles transcription, parsing, duplicate detection, and answering
+ * Handle POST /realtime-token - Create ephemeral token for OpenAI Realtime API
+ * Browser uses this to connect directly to OpenAI for streaming transcription
+ */
+async function handleRealtimeToken(request: Request, env: Env): Promise<Response> {
+  if (!env.OPENAI_API_KEY) {
+    return jsonResponse({ error: 'OPENAI_API_KEY not configured' } as ErrorResponse, 500, request, env);
+  }
+
+  // Check budget (ephemeral tokens are free, but we track for rate limiting)
+  const canProceed = await checkAndIncrementCost(env, 0.01); // Minimal cost tracking
+  if (!canProceed) {
+    return jsonResponse({ error: 'Rate limited', rateLimited: true } as unknown as ErrorResponse, 429, request, env);
+  }
+
+  try {
+    const response = await fetch(OPENAI_REALTIME_SESSIONS_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini-transcribe',
+        voice: null, // Transcription only, no voice output
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error('OpenAI Realtime session error:', text);
+      return jsonResponse({ error: `Failed to create session: ${response.status}` } as ErrorResponse, 500, request, env);
+    }
+
+    const data = await response.json() as {
+      client_secret: { value: string; expires_at: number };
+    };
+
+    const tokenResponse: RealtimeTokenResponse = {
+      clientSecret: data.client_secret.value,
+      expiresAt: data.client_secret.expires_at,
+    };
+
+    return jsonResponse(tokenResponse as unknown as ScoreResponse, 200, request, env);
+  } catch (error) {
+    console.error('Error creating realtime token:', error);
+    return jsonResponse(
+      { error: `Token creation error: ${error instanceof Error ? error.message : 'Unknown error'}` },
+      500,
+      request,
+      env
+    );
+  }
+}
+
+/**
+ * Handle POST /ask - Answer questions for Questions mode
+ * Now simplified: frontend handles transcription via Realtime API streaming
  */
 async function handleAsk(request: Request, env: Env): Promise<Response> {
   let body: AskRequest;
@@ -844,7 +849,6 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
 
   const gameIndex = body.game ?? 0;
   const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
-  const recentQuestions = body.recentQuestions || [];
 
   const allQuestions: string[] = [...(body.textQuestions || [])];
   let transcribedText: string | undefined;
@@ -852,7 +856,7 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   let won = false;
   let secretWord: string | undefined;
 
-  // Step 1: If audio provided, transcribe it
+  // Legacy support: If audio provided, transcribe it (for non-streaming clients)
   if (body.audioBase64 && body.mimeType) {
     const canTranscribe = await checkAndIncrementCost(env, ESTIMATED_COST_PER_TRANSCRIBE_CENTS);
     if (!canTranscribe) {
@@ -862,22 +866,16 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
         transcribedText = await transcribeAudio(body.audioBase64, body.mimeType, env);
       } catch (e) {
         console.error('Transcription error:', e);
-        // Continue without transcription, still process text questions
       }
     }
   }
 
-  // Step 2: Parse transcribed text into questions
-  // Combine with previous transcript for better context
+  // Parse transcribed text into questions (legacy path)
   if (transcribedText && transcribedText.trim() && !rateLimited) {
     const canParse = await checkAndIncrementCost(env, ESTIMATED_COST_PER_PARSE_CENTS);
     if (canParse) {
       try {
-        // Combine previous transcript with current for more context
-        const combinedText = body.previousTranscript
-          ? `${body.previousTranscript} ${transcribedText}`
-          : transcribedText;
-        const parsedQuestions = await parseQuestionsWithLLM(combinedText, env);
+        const parsedQuestions = await parseQuestionsWithLLM(transcribedText, env);
         allQuestions.push(...parsedQuestions);
       } catch (e) {
         console.error('Parse questions error:', e);
@@ -887,31 +885,12 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Step 3: Answer each question (with duplicate detection)
+  // Answer each question
   const answers: Array<{ question: string; answer: QuestionAnswer }> = [];
 
   for (const question of allQuestions) {
-    if (won) {
-      // Already won, skip remaining questions
-      break;
-    }
+    if (won) break;
 
-    // Step 3a: Check for duplicate question using Gemini
-    const canCheckDuplicate = await checkAndIncrementCost(env, ESTIMATED_COST_PER_PARSE_CENTS);
-    if (canCheckDuplicate) {
-      try {
-        const isDuplicate = await checkDuplicateQuestion(question, recentQuestions, env);
-        if (isDuplicate) {
-          console.log(`Skipping duplicate question: "${question}"`);
-          continue; // Skip this question, don't answer it
-        }
-      } catch (e) {
-        console.error('Duplicate check error:', e);
-        // On error, continue to answer the question
-      }
-    }
-
-    // Step 3b: Answer the question
     const canAnswer = await checkAndIncrementCost(env, ESTIMATED_COST_PER_ANSWER_CENTS);
     if (!canAnswer) {
       rateLimited = true;
@@ -1481,6 +1460,11 @@ export default {
     // Questions mode endpoint
     if (url.pathname === '/ask' && request.method === 'POST') {
       return handleAsk(request, env);
+    }
+
+    // Realtime token endpoint (for streaming transcription)
+    if (url.pathname === '/realtime-token' && request.method === 'POST') {
+      return handleRealtimeToken(request, env);
     }
 
     // Questions mode hint endpoint
