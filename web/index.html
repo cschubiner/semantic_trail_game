@@ -59,24 +59,21 @@
           spellcheck="false"
         />
         <button id="guess-btn" onclick="submitGuess()">Guess</button>
-        <button id="mic-btn" title="Voice input">
+        <button id="mic-btn" title="Voice input (Web Speech)">
           <span class="mic-icon">&#x1F399;</span>
+        </button>
+        <button id="transcribe-record-btn" class="transcribe-record-btn" title="GPT-4o transcribe (continuous)">
+          <span class="record-icon">&#x23FA;</span>
         </button>
       </div>
 
       <!-- Mic status -->
       <div id="mic-status" class="mic-status hidden">Listening...</div>
 
-      <!-- GPT-4o Transcribe Recording (Similarity Mode) -->
-      <div class="transcribe-recording">
-        <button id="transcribe-record-btn" class="transcribe-record-btn" title="Record using GPT-4o-mini-transcribe (continuous)">
-          <span class="record-icon">&#x23FA;</span>
-          GPT-4o Transcribe
-        </button>
-        <div id="transcribe-status" class="transcribe-status hidden">
-          <div class="transcribe-indicator" id="transcribe-indicator"></div>
-          <span id="transcribe-status-text">Recording...</span>
-        </div>
+      <!-- Transcribe status (Similarity Mode) -->
+      <div id="transcribe-status" class="transcribe-status hidden">
+        <div class="transcribe-indicator" id="transcribe-indicator"></div>
+        <span id="transcribe-status-text">Recording...</span>
       </div>
 
       <!-- Hint/Reveal buttons -->

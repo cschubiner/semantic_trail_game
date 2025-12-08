@@ -1728,7 +1728,6 @@ function switchMode(mode) {
     document.getElementById('recent-guesses'),
     document.getElementById('similarity-help'),
     document.getElementById('mic-status'),
-    document.querySelector('.transcribe-recording'),  // GPT-4o Transcribe button
     document.getElementById('transcribe-status'),     // Transcribe status indicator
     document.getElementById('hint-display'),          // Similarity hint display
   ];
