@@ -2238,6 +2238,7 @@ function getAnswerGravityWeight(answer) {
   switch (answer.toLowerCase()) {
     case 'so close': return 5;
     case 'yes': return 4;
+    case 'hard no': return 3.5; // Strong signal, slightly more important than regular no
     case 'no': return 3;
     case 'maybe': return 2;
     default: return 1; // N/A
@@ -2325,6 +2326,7 @@ function getAnswerClass(answer) {
   switch (answer.toLowerCase()) {
     case 'yes': return 'answer-yes';
     case 'no': return 'answer-no';
+    case 'hard no': return 'answer-hardno';
     case 'maybe': return 'answer-maybe';
     case 'so close': return 'answer-close';
     case 'hint': return 'answer-hint';

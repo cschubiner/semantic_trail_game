@@ -32,12 +32,17 @@ MODELS = [
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
     "google/gemini-2.0-flash-lite-001",
+    "google/gemini-3-pro-preview",
+    # xAI Grok models
+    "x-ai/grok-4.1-fast",
     # OpenAI models
     "openai/gpt-4o-mini",
     "openai/gpt-5-mini",
     "openai/gpt-5-nano",
     "openai/gpt-4.1",
     "openai/gpt-4.1-mini",
+    "openai/gpt-5.1",
+    "openai/gpt-5.1-mini",
     # Anthropic (Claude Sonnet 4.5 supports structured outputs!)
     "anthropic/claude-sonnet-4.5",
     # DeepSeek (good accuracy, cheap)
@@ -48,7 +53,7 @@ MODELS = [
     "mistralai/ministral-14b-2512",
 ]
 
-Answer = Literal["yes", "no", "maybe", "so close", "N/A"]
+Answer = Literal["yes", "no", "hard no", "maybe", "so close", "N/A"]
 
 @dataclass
 class TestCase:
@@ -117,6 +122,13 @@ TEST_CASES = [
     TestCase("guidance", "asdfghjkl?", "N/A", "gibberish"),
     TestCase("bridge", "Purple monkey dishwasher?", "N/A", "nonsense"),
 
+    # === HARD NO cases (opposite is true) ===
+    TestCase("oracle", "Is it dumb?", "hard no", "oracle is epitome of wisdom"),
+    TestCase("genius", "Is it stupid?", "hard no", "genius is opposite of stupid"),
+    TestCase("peace", "Is it violent?", "hard no", "peace is opposite of violence"),
+    TestCase("whisper", "Is it extremely loud?", "hard no", "whisper is the opposite"),
+    TestCase("giant", "Is it tiny?", "hard no", "giant is opposite of tiny"),
+
     # === Edge cases ===
     TestCase("oracle", "Is it similar to an oracle?", "yes", "contains the word - should win"),
     TestCase("fire", "Does it start with F?", "yes", "letter question"),
@@ -139,6 +151,7 @@ RULES - READ CAREFULLY:
 ANSWER GUIDE:
 - "yes" = the secret word fits their question
 - "no" = the secret word does NOT fit
+- "hard no" = the OPPOSITE is true (e.g., "Is it dumb?" for "oracle" → hard no because oracle is the epitome of wisdom)
 - "maybe" = depends on context
 - "so close" = they're describing the core concept of the word
 - "N/A" = ONLY for complete gibberish (almost never use this)
@@ -170,7 +183,7 @@ def query_model(model: str, secret: str, question: str) -> tuple[str, float]:
             "properties": {
                 "answer": {
                     "type": "string",
-                    "enum": ["yes", "no", "maybe", "so close", "hint", "N/A"],
+                    "enum": ["yes", "no", "hard no", "maybe", "so close", "hint", "N/A"],
                     "description": "The answer to the yes/no question"
                 }
             },
@@ -220,6 +233,8 @@ def query_model(model: str, secret: str, question: str) -> tuple[str, float]:
                 return "yes", latency
             elif answer == "no":
                 return "no", latency
+            elif answer in ("hard no", "hardno"):
+                return "hard no", latency
             elif answer == "maybe":
                 return "maybe", latency
             elif answer in ("so close", "soclose"):
@@ -250,7 +265,7 @@ def run_benchmark():
     print(f"Running {len(tasks)} queries in parallel...\n")
 
     # Run in parallel
-    with ThreadPoolExecutor(max_workers=20) as executor:
+    with ThreadPoolExecutor(max_workers=50) as executor:
         future_to_task = {
             executor.submit(query_model, model, tc.secret, tc.question): (model, tc)
             for model, tc in tasks

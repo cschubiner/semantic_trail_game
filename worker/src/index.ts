@@ -164,7 +164,7 @@ interface LLMHintResponse {
 
 // === Questions Mode Types ===
 
-type QuestionAnswer = 'yes' | 'no' | 'maybe' | 'so close' | 'N/A' | 'hint';
+type QuestionAnswer = 'yes' | 'no' | 'hard no' | 'maybe' | 'so close' | 'N/A' | 'hint';
 
 interface AskRequest {
   audioBase64?: string;
@@ -739,6 +739,7 @@ RULES - READ CAREFULLY:
 ANSWER GUIDE:
 - "yes" = the secret word fits their question
 - "no" = the secret word does NOT fit
+- "hard no" = the OPPOSITE is true (e.g., "Is it dumb?" for "oracle" → hard no because oracle is the epitome of wisdom)
 - "maybe" = depends on context
 - "so close" = they're describing the core concept of the word
 - "hint" = user is asking for a hint (NOT a yes/no question)
@@ -767,7 +768,7 @@ Answer: {"answer": "yes|no|maybe|so close|hint"}`;
       properties: {
         answer: {
           type: 'string',
-          enum: ['yes', 'no', 'maybe', 'so close', 'hint', 'N/A'],
+          enum: ['yes', 'no', 'hard no', 'maybe', 'so close', 'hint', 'N/A'],
           description: 'The answer to the yes/no question',
         },
       },
@@ -814,6 +815,7 @@ Answer: {"answer": "yes|no|maybe|so close|hint"}`;
     let answer: QuestionAnswer;
     if (answerRaw === 'yes') answer = 'yes';
     else if (answerRaw === 'no') answer = 'no';
+    else if (answerRaw === 'hard no' || answerRaw === 'hardno') answer = 'hard no';
     else if (answerRaw === 'maybe') answer = 'maybe';
     else if (answerRaw === 'so close' || answerRaw === 'soclose') answer = 'so close';
     else if (answerRaw === 'hint') answer = 'hint';

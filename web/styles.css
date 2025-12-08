@@ -949,6 +949,12 @@ footer a:hover {
   background: rgba(255, 68, 68, 0.15);
 }
 
+.answer-hardno {
+  color: #ff2222;
+  background: rgba(255, 0, 0, 0.25);
+  font-weight: bold;
+}
+
 .answer-maybe {
   color: var(--warm-color);
   background: rgba(255, 204, 0, 0.15);
