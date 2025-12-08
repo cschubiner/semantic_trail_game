@@ -64,8 +64,8 @@ const ESTIMATED_COST_PER_ANSWER_CENTS = 0.05;
 const OPENAI_TRANSCRIPTION_URL = 'https://api.openai.com/v1/audio/transcriptions';
 const TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 
-// OpenAI Realtime API for streaming transcription
-const OPENAI_REALTIME_SESSIONS_URL = 'https://api.openai.com/v1/realtime/sessions';
+// OpenAI Realtime API for streaming transcription (transcription-only is 20x cheaper!)
+const OPENAI_REALTIME_TRANSCRIPTION_SESSIONS_URL = 'https://api.openai.com/v1/realtime/transcription_sessions';
 
 // Similarity to score mapping (non-linear)
 // Piecewise similarity->score mapping tuned for numeric words (less generous)
@@ -782,7 +782,7 @@ Respond with ONLY a JSON object: {"answer": "your_answer_here"}`;
 
 /**
  * Handle POST /realtime-token - Create ephemeral token for OpenAI Realtime API
- * Browser uses this to connect directly to OpenAI for streaming transcription
+ * Uses transcription-only endpoint which is 20x cheaper ($0.003/min vs $0.06/min)
  */
 async function handleRealtimeToken(request: Request, env: Env): Promise<Response> {
   if (!env.OPENAI_API_KEY) {
@@ -796,25 +796,19 @@ async function handleRealtimeToken(request: Request, env: Env): Promise<Response
   }
 
   try {
-    // For transcription sessions, use gpt-4o-realtime model with transcription config
-    const response = await fetch(OPENAI_REALTIME_SESSIONS_URL, {
+    // Use transcription-only endpoint - NO model param allowed!
+    const response = await fetch(OPENAI_REALTIME_TRANSCRIPTION_SESSIONS_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'gpt-4o-realtime-preview-2024-12-17',
-        modalities: ['audio', 'text'],
-        input_audio_transcription: {
-          model: 'gpt-4o-mini-transcribe',
-        },
-      }),
+      body: JSON.stringify({}), // Empty body for transcription sessions
     });
 
     if (!response.ok) {
       const text = await response.text();
-      console.error('OpenAI Realtime session error:', text);
+      console.error('OpenAI Realtime transcription session error:', text);
       return jsonResponse({ error: `Failed to create session: ${response.status} - ${text}` } as ErrorResponse, 500, request, env);
     }
 

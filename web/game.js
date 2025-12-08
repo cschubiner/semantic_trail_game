@@ -1829,20 +1829,19 @@ async function connectRealtimeWebSocket() {
     const token = await getRealtimeToken();
 
     // Connect with subprotocols for browser auth
-    // Use model param URL (not intent=transcription) since we're using full realtime model
+    // Use intent=transcription for transcription-only mode (20x cheaper!)
     realtimeWs = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17',
+      'wss://api.openai.com/v1/realtime?intent=transcription',
       ['realtime', `openai-insecure-api-key.${token}`, 'openai-beta.realtime-v1']
     );
 
     realtimeWs.onopen = () => {
-      console.log('Connected to OpenAI Realtime API');
+      console.log('Connected to OpenAI Realtime Transcription API');
 
-      // Configure session for transcription
+      // Configure transcription session
       realtimeWs.send(JSON.stringify({
-        type: 'session.update',
+        type: 'transcription_session.update',
         session: {
-          modalities: ['audio', 'text'],
           input_audio_format: 'pcm16',
           input_audio_transcription: {
             model: 'gpt-4o-mini-transcribe',
@@ -1887,14 +1886,14 @@ async function connectRealtimeWebSocket() {
 }
 
 /**
- * Handle messages from OpenAI Realtime API
+ * Handle messages from OpenAI Realtime Transcription API
  */
 function handleRealtimeMessage(data) {
   switch (data.type) {
-    case 'session.created':
-    case 'session.updated':
-      console.log('Session configured:', data.type);
-      if (data.type === 'session.updated') {
+    case 'transcription_session.created':
+    case 'transcription_session.updated':
+      console.log('Transcription session configured:', data.type);
+      if (data.type === 'transcription_session.updated') {
         audioStatusText.textContent = 'Streaming... speak your questions';
       }
       break;
