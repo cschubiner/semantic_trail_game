@@ -1812,7 +1812,50 @@ function addQAToHistory(question, answer, won = false) {
 }
 
 /**
- * Render Q&A history
+ * Get gravity weight for answer type
+ * Higher weight = more important, stays near top longer
+ */
+function getAnswerGravityWeight(answer) {
+  switch (answer.toLowerCase()) {
+    case 'so close': return 5;
+    case 'yes': return 4;
+    case 'no': return 3;
+    case 'maybe': return 2;
+    default: return 1; // N/A
+  }
+}
+
+/**
+ * Calculate gravity-weighted sort score for Q&A item
+ * Combines recency with answer importance
+ */
+function calculateGravityScore(qa, index, totalItems, now) {
+  // Recency score: newer items get higher base score (0 to 1)
+  const recencyScore = index / totalItems;
+
+  // Gravity weight based on answer type
+  const weight = getAnswerGravityWeight(qa.answer);
+
+  // Time decay factor: how long ago was this question asked
+  // More recent = higher decay multiplier
+  const ageMs = now - qa.timestamp;
+  const ageMinutes = ageMs / 60000;
+
+  // Decay function: importance decays slower for higher-weighted answers
+  // Base decay per minute, reduced by weight
+  // Higher weight = slower decay
+  const decayRate = 0.1 / weight; // N/A decays 5x faster than "so close"
+  const decayMultiplier = Math.exp(-decayRate * ageMinutes);
+
+  // Combined score: recency + (weight bonus * decay)
+  // Weight bonus keeps important answers buoyant
+  const weightBonus = (weight - 1) * 0.3 * decayMultiplier;
+
+  return recencyScore + weightBonus;
+}
+
+/**
+ * Render Q&A history with gravity-weighted sorting
  */
 function renderQAHistory() {
   if (!qaHistoryEl || !noQuestionsEl) return;
@@ -1827,13 +1870,22 @@ function renderQAHistory() {
   noQuestionsEl.classList.add('hidden');
   questionCountEl.textContent = qaHistory.length;
 
-  // Render most recent first
-  const reversed = [...qaHistory].reverse();
+  // Create array with original indices for gravity calculation
+  const now = Date.now();
+  const itemsWithScores = qaHistory.map((qa, index) => ({
+    qa,
+    originalIndex: index,
+    gravityScore: calculateGravityScore(qa, index, qaHistory.length, now)
+  }));
 
-  qaHistoryEl.innerHTML = reversed.map((qa, idx) => {
+  // Sort by gravity score (highest first = most recent/important)
+  itemsWithScores.sort((a, b) => b.gravityScore - a.gravityScore);
+
+  qaHistoryEl.innerHTML = itemsWithScores.map((item) => {
+    const qa = item.qa;
     const answerClass = getAnswerClass(qa.answer);
     const wonClass = qa.won ? ' won' : '';
-    const questionNum = qaHistory.length - idx;
+    const questionNum = item.originalIndex + 1;
 
     return `
       <div class="qa-item${wonClass}">
