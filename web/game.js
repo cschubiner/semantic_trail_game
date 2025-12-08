@@ -1720,7 +1720,7 @@ function switchMode(mode) {
   if (modeSimBtn) modeSimBtn.classList.toggle('active', mode === 'similarity');
   if (modeQuestionsBtn) modeQuestionsBtn.classList.toggle('active', mode === 'questions');
 
-  // Elements to show/hide
+  // Elements to show/hide for Similarity mode
   const similarityElements = [
     document.querySelector('.input-area'),
     document.querySelector('.hint-buttons'),
@@ -1728,6 +1728,9 @@ function switchMode(mode) {
     document.getElementById('recent-guesses'),
     document.getElementById('similarity-help'),
     document.getElementById('mic-status'),
+    document.querySelector('.transcribe-recording'),  // GPT-4o Transcribe button
+    document.getElementById('transcribe-status'),     // Transcribe status indicator
+    document.getElementById('hint-display'),          // Similarity hint display
   ];
 
   if (mode === 'similarity') {
@@ -1735,20 +1738,25 @@ function switchMode(mode) {
     similarityElements.forEach(el => el?.classList.remove('hidden'));
     if (questionsContainer) questionsContainer.classList.add('hidden');
 
-    // Stop recording if active
+    // Stop Questions mode recording if active
     if (isRecording) {
       stopRecording();
     }
   } else {
-    // Show questions mode elements
+    // Hide similarity mode elements
     similarityElements.forEach(el => el?.classList.add('hidden'));
     if (questionsContainer) questionsContainer.classList.remove('hidden');
 
-    // Stop similarity mode mic if active
+    // Stop similarity mode Web Speech API mic if active
     if (micShouldBeActive) {
       micShouldBeActive = false;
       try { recognition?.abort(); } catch (e) {}
       micBtn?.classList.remove('listening');
+    }
+
+    // Stop similarity mode GPT-4o transcribe recording if active
+    if (typeof stopSimRecording === 'function' && simIsRecording) {
+      stopSimRecording();
     }
 
     // Render Q&A history
