@@ -41,7 +41,10 @@ const RERANK_MODEL = 'google/gemini-2.5-flash';
 const HINT_MODEL = 'anthropic/claude-sonnet-4.5';
 
 // LLM for answering questions in 20 Questions mode
-const QUESTIONS_ANSWER_MODEL = 'anthropic/claude-haiku-4.5';
+const QUESTIONS_ANSWER_MODEL = 'google/gemini-2.5-flash';
+
+// LLM for parsing questions from speech (fast and cheap)
+const QUESTIONS_PARSE_MODEL = 'google/gemini-2.5-flash-lite';
 
 // Cost protection: $2/hour budget
 const HOURLY_BUDGET_CENTS = 200; // $2.00 in cents
@@ -672,7 +675,7 @@ Output: {"questions": ["Is it a person?", "Is it an object?", "Is it something y
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: QUESTIONS_ANSWER_MODEL,
+      model: QUESTIONS_PARSE_MODEL,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 500,
@@ -722,45 +725,34 @@ async function answerQuestionWithLLM(
     return { answer: 'yes', won: true };
   }
 
-  const prompt = `You are playing 20 Questions. Secret word: "${secret}"
+  const prompt = `20 Questions game. Secret word: "${secret}"
 Question: "${question}"
 
-WORD INFO (for spelling/letter questions):
-- First letter: "${secret[0].toUpperCase()}" (letter #${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.indexOf(secret[0].toUpperCase()) + 1}, A-M=first half, N-Z=second half)
-- Length: ${secret.length} letters
+Word info: starts with "${secret[0].toUpperCase()}", ${secret.length} letters
 
-ANSWER OPTIONS:
-- "yes" - clearly true
-- "no" - clearly false
-- "maybe" - uncertain or context-dependent
-- "so close" - they're describing the word almost exactly, using near-synonyms, or asking about the word's core meaning
-- "N/A" - not a yes/no question
+RULES - READ CAREFULLY:
+1. Answer whether "${secret}" relates to what they asked
+2. NEVER say N/A for valid questions. N/A is ONLY for gibberish like "asdfjkl?"
 
-EXAMPLES (learn the pattern):
+ANSWER GUIDE:
+- "yes" = the secret word fits their question
+- "no" = the secret word does NOT fit
+- "maybe" = depends on context
+- "so close" = they're describing the core concept of the word
+- "N/A" = ONLY for complete gibberish (almost never use this)
 
-Secret: "guidance" | Q: "Is it about guiding people?" → "so close" (describes the word's core meaning!)
-Secret: "guidance" | Q: "Would 100 people know this word?" → "yes" (it's a common English word)
-Secret: "guidance" | Q: "Is it a noun?" → "yes"
-Secret: "guidance" | Q: "Is it a common noun?" → "yes" (guidance is commonly known)
+CRITICAL: These are ALL valid yes/no questions - answer them:
+- "Is it related to X?" → Answer yes/no/maybe based on whether "${secret}" relates to X
+- "Is the word about X?" → Answer yes/no/maybe
+- "Does it involve X?" → Answer yes/no/maybe
+- "Is it a type of X?" → Answer yes/no/maybe
 
-Secret: "happiness" | Q: "Is it about feeling good?" → "so close" (core meaning)
-Secret: "happiness" | Q: "Is it joy?" → "so close" (near-synonym)
-Secret: "happiness" | Q: "Is it an emotion?" → "yes"
+EXAMPLES:
+"${secret}" asked "Is it related to knowledge?" → If ${secret} relates to knowledge, say "yes" or "so close"
+"${secret}" asked "Is it a verb?" → Answer based on whether ${secret} is a verb
+"${secret}" asked "Is it alive?" → Answer based on whether ${secret} is alive
 
-Secret: "bridge" | Q: "Does it connect things?" → "so close" (core function)
-Secret: "bridge" | Q: "Is it a structure?" → "yes"
-Secret: "bridge" | Q: "Is it made of wood?" → "maybe" (some are, some aren't)
-
-Secret: "whisper" | Q: "Is it about speaking quietly?" → "so close"
-Secret: "whisper" | Q: "Is it a verb?" → "yes"
-Secret: "whisper" | Q: "Can you do it?" → "yes"
-
-Secret: "ocean" | Q: "Is it a large body of water?" → "so close"
-Secret: "ocean" | Q: "Is it wet?" → "yes"
-
-BE GENEROUS with "so close" when they're clearly onto the concept. Answer accurately for factual questions.
-
-Respond: {"answer": "your_answer"}`;
+Answer: {"answer": "yes|no|maybe|so close"}`;
 
   const response = await fetch(OPENROUTER_CHAT_URL, {
     method: 'POST',
