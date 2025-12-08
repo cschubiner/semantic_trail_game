@@ -1751,6 +1751,14 @@ function switchMode(mode) {
     if (isRecording) {
       stopRecording();
     }
+
+    // Clear any pending question state
+    if (revisionTimer) {
+      clearTimeout(revisionTimer);
+      revisionTimer = null;
+    }
+    currentQuestion = null;
+    revisionBuffer = [];
   } else {
     // Hide similarity mode elements
     similarityElements.forEach(el => el?.classList.add('hidden'));
@@ -1959,22 +1967,91 @@ function updateTranscriptionPreview() {
 }
 
 /**
- * Process a completed transcript segment - parse questions and get answers
+ * Check if a transcript looks like a complete question
+ * Returns true if it should be sent immediately
  */
-async function processCompletedTranscript(transcript) {
-  if (!transcript || !transcript.trim() || questionsWon) return;
+function looksLikeCompleteQuestion(text) {
+  const t = text.trim();
+  // Ends with question mark = definitely complete
+  if (t.endsWith('?')) return true;
+  // Very short without punctuation = fragment
+  if (t.split(/\s+/).length <= 2) return false;
+  // Has sentence-ending punctuation
+  if (/[.!]$/.test(t) && t.split(/\s+/).length > 3) return true;
+  // Starts with question word and is reasonably long
+  if (/^(is|are|does|do|can|will|would|could|should|was|were|has|have|did|what|how|why|where|when|who)\b/i.test(t) && t.split(/\s+/).length > 3) return true;
+  // Default: treat as incomplete if short
+  return t.split(/\s+/).length > 4;
+}
 
-  // Reset streaming transcript for next segment
-  streamingTranscript = '';
+/**
+ * Check if a transcript looks like a fragment/continuation
+ */
+function isFragment(text) {
+  const t = text.trim();
+  const words = t.split(/\s+/);
+  // Short = fragment
+  if (words.length < 4) return true;
+  // Lacks sentence-ending punctuation = fragment
+  if (!/[.?!]$/.test(t)) return true;
+  return false;
+}
 
-  // Send to backend to parse questions and get answers
+/**
+ * Check if this transcript is a continuation of the current question
+ */
+function isContinuation(text, now) {
+  if (!currentQuestion) return false;
+  if (now - currentQuestion.lastUpdated > REVISION_WINDOW_MS) return false;
+
+  const t = text.trim();
+  // Starts with connector word = continuation
+  if (CONNECTOR_REGEX.test(t)) return true;
+  // Is a fragment = continuation
+  if (isFragment(t)) return true;
+  return false;
+}
+
+/**
+ * Generate a simple unique ID for question tracking
+ */
+function generateQuestionId() {
+  return 'q_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+}
+
+/**
+ * Send a revision combining the anchor question + buffered fragments
+ */
+async function sendRevision() {
+  if (!currentQuestion || revisionBuffer.length === 0) return;
+
+  // Combine anchor + buffer
+  const combinedText = `${currentQuestion.text} ${revisionBuffer.join(' ')}`;
+  console.log(`🔄 Sending Revision [${currentQuestion.id}]: "${combinedText}"`);
+
+  // Update the anchor
+  currentQuestion.text = combinedText;
+  currentQuestion.lastUpdated = Date.now();
+  revisionBuffer = [];
+
+  // Send to backend
+  await sendQuestionToBackend(combinedText, currentQuestion.id);
+}
+
+/**
+ * Send question text to backend for parsing and answering
+ */
+async function sendQuestionToBackend(text, questionId) {
+  if (questionsWon) return;
+
   try {
     const response = await fetch(`${API_BASE}/ask`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        textQuestions: [transcript], // Send raw transcript, backend will parse
+        textQuestions: [text],
         game: currentGameIndex,
+        questionId: questionId,  // For tracking/dedup on backend if needed
       }),
     });
 
@@ -1984,8 +2061,9 @@ async function processCompletedTranscript(transcript) {
 
     const data = await response.json();
 
-    // Add answers to history
+    // Add answers to history (with dedup)
     for (const qa of data.answers) {
+      // Check for duplicates - same question text within 30 seconds
       const isDuplicate = qaHistory.some(
         existing => existing.question.toLowerCase() === qa.question.toLowerCase() &&
                     Date.now() - existing.timestamp < 30000
@@ -2005,7 +2083,103 @@ async function processCompletedTranscript(transcript) {
     }
 
   } catch (error) {
-    console.error('Error processing transcript:', error);
+    console.error('Error sending question to backend:', error);
+  }
+}
+
+/**
+ * Process a completed transcript segment using Anchor & Append strategy
+ * - Complete questions → send immediately (0ms latency)
+ * - Fragments/continuations → buffer and send as one revision
+ */
+async function processCompletedTranscript(transcript) {
+  if (!transcript || !transcript.trim() || questionsWon) return;
+
+  const text = transcript.trim();
+  const now = Date.now();
+
+  // Reset streaming transcript for next segment
+  streamingTranscript = '';
+
+  console.log(`📝 Transcript: "${text}" | isContinuation: ${isContinuation(text, now)} | looksComplete: ${looksLikeCompleteQuestion(text)}`);
+
+  // CASE 1: This is a continuation of the current question
+  if (isContinuation(text, now)) {
+    revisionBuffer.push(text);
+
+    // If we already sent the anchor, schedule a debounced revision
+    if (currentQuestion.sent) {
+      if (revisionTimer) clearTimeout(revisionTimer);
+      revisionTimer = setTimeout(sendRevision, DEBOUNCE_MS);
+      console.log(`🐢 Buffered continuation, will revise in ${DEBOUNCE_MS}ms`);
+    } else {
+      // Anchor not sent yet - check if combined text is now complete
+      const combinedText = `${currentQuestion.text} ${revisionBuffer.join(' ')}`;
+      if (looksLikeCompleteQuestion(combinedText)) {
+        // Combined is complete! Send it now
+        currentQuestion.text = combinedText;
+        currentQuestion.sent = true;
+        currentQuestion.lastUpdated = now;
+        revisionBuffer = [];
+        console.log(`🚀 Combined question complete, sending: "${combinedText}"`);
+        await sendQuestionToBackend(combinedText, currentQuestion.id);
+      } else {
+        // Still incomplete, wait for more
+        if (revisionTimer) clearTimeout(revisionTimer);
+        revisionTimer = setTimeout(async () => {
+          // Timeout - send what we have even if incomplete
+          const finalText = `${currentQuestion.text} ${revisionBuffer.join(' ')}`;
+          currentQuestion.text = finalText;
+          currentQuestion.sent = true;
+          revisionBuffer = [];
+          console.log(`⏰ Timeout, sending incomplete: "${finalText}"`);
+          await sendQuestionToBackend(finalText, currentQuestion.id);
+        }, DEBOUNCE_MS);
+      }
+    }
+    return;
+  }
+
+  // CASE 2: New question (not a continuation)
+
+  // First, flush any pending revision for the old question
+  if (revisionBuffer.length > 0 && currentQuestion) {
+    if (revisionTimer) clearTimeout(revisionTimer);
+    await sendRevision();
+  }
+
+  // Start a new question
+  const newId = generateQuestionId();
+  currentQuestion = {
+    id: newId,
+    text: text,
+    lastUpdated: now,
+    sent: false
+  };
+  revisionBuffer = [];
+
+  // Check if it looks complete
+  if (looksLikeCompleteQuestion(text)) {
+    // FAST PATH: Send immediately
+    currentQuestion.sent = true;
+    console.log(`🚀 Complete question, sending immediately: "${text}"`);
+    await sendQuestionToBackend(text, newId);
+  } else {
+    // Incomplete - wait for more with a timeout
+    console.log(`⏳ Incomplete question, waiting for more: "${text}"`);
+    if (revisionTimer) clearTimeout(revisionTimer);
+    revisionTimer = setTimeout(async () => {
+      if (currentQuestion && !currentQuestion.sent) {
+        const finalText = revisionBuffer.length > 0
+          ? `${currentQuestion.text} ${revisionBuffer.join(' ')}`
+          : currentQuestion.text;
+        currentQuestion.text = finalText;
+        currentQuestion.sent = true;
+        revisionBuffer = [];
+        console.log(`⏰ Timeout, sending: "${finalText}"`);
+        await sendQuestionToBackend(finalText, currentQuestion.id);
+      }
+    }, DEBOUNCE_MS);
   }
 }
 
@@ -2126,6 +2300,28 @@ function stopRecording() {
   if (!isRecording) return;
 
   isRecording = false;
+
+  // Flush any pending question/revision before stopping
+  if (revisionTimer) {
+    clearTimeout(revisionTimer);
+    revisionTimer = null;
+  }
+  if (currentQuestion && !currentQuestion.sent) {
+    // Send what we have
+    const finalText = revisionBuffer.length > 0
+      ? `${currentQuestion.text} ${revisionBuffer.join(' ')}`
+      : currentQuestion.text;
+    if (finalText.trim()) {
+      console.log(`🛑 Recording stopped, flushing: "${finalText}"`);
+      sendQuestionToBackend(finalText, currentQuestion.id);
+    }
+  } else if (revisionBuffer.length > 0 && currentQuestion) {
+    // Anchor was sent but we have buffered revisions
+    sendRevision();
+  }
+  // Clear state
+  currentQuestion = null;
+  revisionBuffer = [];
 
   // Stop audio processing
   if (audioWorklet) {
