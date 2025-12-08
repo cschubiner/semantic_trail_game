@@ -796,6 +796,7 @@ async function handleRealtimeToken(request: Request, env: Env): Promise<Response
   }
 
   try {
+    // For transcription sessions, use gpt-4o-realtime model with transcription config
     const response = await fetch(OPENAI_REALTIME_SESSIONS_URL, {
       method: 'POST',
       headers: {
@@ -803,15 +804,18 @@ async function handleRealtimeToken(request: Request, env: Env): Promise<Response
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini-transcribe',
-        voice: null, // Transcription only, no voice output
+        model: 'gpt-4o-realtime-preview-2024-12-17',
+        modalities: ['audio', 'text'],
+        input_audio_transcription: {
+          model: 'gpt-4o-mini-transcribe',
+        },
       }),
     });
 
     if (!response.ok) {
       const text = await response.text();
       console.error('OpenAI Realtime session error:', text);
-      return jsonResponse({ error: `Failed to create session: ${response.status}` } as ErrorResponse, 500, request, env);
+      return jsonResponse({ error: `Failed to create session: ${response.status} - ${text}` } as ErrorResponse, 500, request, env);
     }
 
     const data = await response.json() as {
