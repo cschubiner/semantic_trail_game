@@ -26,13 +26,20 @@ if not OPENROUTER_API_KEY:
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# Models to test
+# Models to test - all support structured_outputs on OpenRouter
 MODELS = [
+    # Gemini models (our current choice)
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
-    "anthropic/claude-haiku-4.5",
-    "openai/gpt-4o-mini",
-    "meta-llama/llama-3.3-8b-instruct:free",
+    # Mistral models (very fast and cheap with structured outputs)
+    "mistralai/ministral-3b-2512",    # $0.10/M tokens - cheapest
+    "mistralai/ministral-8b-2512",    # $0.15/M tokens
+    "mistralai/ministral-14b-2512",   # $0.20/M tokens
+    # DeepSeek (good accuracy, cheap)
+    "deepseek/deepseek-v3.2",
+    # Free options
+    "arcee-ai/trinity-mini:free",
+    # Note: Claude Haiku 4.5 does NOT support structured_outputs on OpenRouter
 ]
 
 Answer = Literal["yes", "no", "maybe", "so close", "N/A"]
@@ -148,6 +155,24 @@ def query_model(model: str, secret: str, question: str) -> tuple[str, float]:
     """Query a model and return (answer, latency_ms)."""
     prompt = build_prompt(secret, question)
 
+    # JSON Schema for structured outputs - forces exact response format
+    json_schema = {
+        "name": "answer_schema",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "answer": {
+                    "type": "string",
+                    "enum": ["yes", "no", "maybe", "so close", "hint", "N/A"],
+                    "description": "The answer to the yes/no question"
+                }
+            },
+            "required": ["answer"],
+            "additionalProperties": False
+        }
+    }
+
     start = time.time()
     try:
         response = requests.post(
@@ -161,7 +186,10 @@ def query_model(model: str, secret: str, question: str) -> tuple[str, float]:
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 50,
-                "response_format": {"type": "json_object"},
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": json_schema
+                },
             },
             timeout=30,
         )

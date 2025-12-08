@@ -964,6 +964,11 @@ footer a:hover {
   background: rgba(136, 136, 136, 0.15);
 }
 
+.answer-hint {
+  color: #44ccff;
+  background: rgba(68, 204, 255, 0.15);
+}
+
 .no-questions {
   text-align: center;
   color: var(--text-muted);

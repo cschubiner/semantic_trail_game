@@ -2188,6 +2188,14 @@ async function submitQuestion(questionText = null) {
 
     if (data.answers && data.answers.length > 0) {
       const qa = data.answers[0];
+
+      // If user asked for a hint, trigger the hint function instead of adding to history
+      if (qa.answer.toLowerCase() === 'hint') {
+        showStatus('Getting hint...', 'info');
+        getQuestionsHint();
+        return;
+      }
+
       addQAToHistory(qa.question, qa.answer, data.won);
       showStatus('', '');
     }
@@ -2319,6 +2327,7 @@ function getAnswerClass(answer) {
     case 'no': return 'answer-no';
     case 'maybe': return 'answer-maybe';
     case 'so close': return 'answer-close';
+    case 'hint': return 'answer-hint';
     default: return 'answer-na';
   }
 }

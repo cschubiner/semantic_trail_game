@@ -164,7 +164,7 @@ interface LLMHintResponse {
 
 // === Questions Mode Types ===
 
-type QuestionAnswer = 'yes' | 'no' | 'maybe' | 'so close' | 'N/A';
+type QuestionAnswer = 'yes' | 'no' | 'maybe' | 'so close' | 'N/A' | 'hint';
 
 interface AskRequest {
   audioBase64?: string;
@@ -719,9 +719,10 @@ async function answerQuestionWithLLM(
   const secretLower = secret.toLowerCase();
 
   // Check for win condition: secret word appears anywhere in the question
-  // Use word boundary to avoid partial matches (e.g., "or" in "oracle")
-  const wordBoundaryRegex = new RegExp(`\\b${secretLower}\\b`, 'i');
-  if (wordBoundaryRegex.test(questionLower)) {
+  // Match the word with common suffixes (s, es, ed, ing, er, etc.) for plurals/conjugations
+  // e.g., "oracle" matches "oracles", "guide" matches "guiding"
+  const wordWithSuffixRegex = new RegExp(`\\b${secretLower}(s|es|ed|ing|er|ers|ly)?\\b`, 'i');
+  if (wordWithSuffixRegex.test(questionLower)) {
     return { answer: 'yes', won: true };
   }
 
@@ -733,12 +734,14 @@ Word info: starts with "${secret[0].toUpperCase()}", ${secret.length} letters
 RULES - READ CAREFULLY:
 1. Answer whether "${secret}" relates to what they asked
 2. NEVER say N/A for valid questions. N/A is ONLY for gibberish like "asdfjkl?"
+3. If user asks for a HINT (e.g., "give me a hint", "I need a hint", "hint please"), respond with "hint"
 
 ANSWER GUIDE:
 - "yes" = the secret word fits their question
 - "no" = the secret word does NOT fit
 - "maybe" = depends on context
 - "so close" = they're describing the core concept of the word
+- "hint" = user is asking for a hint (NOT a yes/no question)
 - "N/A" = ONLY for complete gibberish (almost never use this)
 
 CRITICAL: These are ALL valid yes/no questions - answer them:
@@ -750,9 +753,28 @@ CRITICAL: These are ALL valid yes/no questions - answer them:
 EXAMPLES:
 "${secret}" asked "Is it related to knowledge?" → If ${secret} relates to knowledge, say "yes" or "so close"
 "${secret}" asked "Is it a verb?" → Answer based on whether ${secret} is a verb
-"${secret}" asked "Is it alive?" → Answer based on whether ${secret} is alive
+"${secret}" asked "Can I get a hint?" → "hint"
+"${secret}" asked "Give me a hint please" → "hint"
 
-Answer: {"answer": "yes|no|maybe|so close"}`;
+Answer: {"answer": "yes|no|maybe|so close|hint"}`;
+
+  // JSON Schema for structured outputs - forces exact response format
+  const jsonSchema = {
+    name: 'answer_schema',
+    strict: true,
+    schema: {
+      type: 'object',
+      properties: {
+        answer: {
+          type: 'string',
+          enum: ['yes', 'no', 'maybe', 'so close', 'hint', 'N/A'],
+          description: 'The answer to the yes/no question',
+        },
+      },
+      required: ['answer'],
+      additionalProperties: false,
+    },
+  };
 
   const response = await fetch(OPENROUTER_CHAT_URL, {
     method: 'POST',
@@ -765,7 +787,10 @@ Answer: {"answer": "yes|no|maybe|so close"}`;
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 50,
-      response_format: { type: 'json_object' },
+      response_format: {
+        type: 'json_schema',
+        json_schema: jsonSchema,
+      },
     }),
   });
 
@@ -785,12 +810,13 @@ Answer: {"answer": "yes|no|maybe|so close"}`;
     const parsed = JSON.parse(jsonStr);
     const answerRaw = (parsed.answer || '').toString().toLowerCase().trim();
 
-    // Normalize various formats DeepSeek might return
+    // Normalize various formats
     let answer: QuestionAnswer;
     if (answerRaw === 'yes') answer = 'yes';
     else if (answerRaw === 'no') answer = 'no';
     else if (answerRaw === 'maybe') answer = 'maybe';
     else if (answerRaw === 'so close' || answerRaw === 'soclose') answer = 'so close';
+    else if (answerRaw === 'hint') answer = 'hint';
     else answer = 'N/A';
 
     return { answer, won: false };
