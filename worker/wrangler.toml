@@ -12,7 +12,7 @@ id = "c084c661e9564d2683f0189f0c7abd2a"
 # Environment variables (non-secret)
 [vars]
 SECRET_SALT = "change-this-to-a-random-string"
-ALLOWED_ORIGINS = "https://cschubiner.github.io,http://localhost:8787,http://localhost:3000,http://localhost:8080"
+ALLOWED_ORIGINS = "https://cschubiner.github.io,http://localhost:8787,http://localhost:3000,http://localhost:8080,null"
 
 # Secrets (set via `wrangler secret put OPENROUTER_API_KEY`):
 # - OPENROUTER_API_KEY
