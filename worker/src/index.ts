@@ -643,18 +643,27 @@ async function transcribeAudio(
  * Parse natural language text into discrete questions using DeepSeek
  */
 async function parseQuestionsWithLLM(text: string, env: Env): Promise<string[]> {
-  const prompt = `Extract all questions from this transcribed speech.
-Return ONLY questions that are asking about properties or characteristics of something (yes/no questions).
-Ignore statements, commands, or off-topic content.
-Clean up any transcription errors to make proper questions.
+  const prompt = `You are parsing transcribed speech from a 20 Questions game. Extract EACH individual yes/no question as a SEPARATE item.
+
+CRITICAL: Split on EVERY question. "Is it alive? Is it big?" = TWO separate questions, not one.
+
+Rules:
+1. Each question mark (?) indicates a separate question - split them
+2. Return ONLY yes/no style questions (ignore statements, greetings, filler words)
+3. Clean up grammar/capitalization
+4. Keep questions short and clear
 
 Transcribed text: "${text}"
 
-Respond with a JSON object with a "questions" array containing the extracted questions.
-If no valid questions found, return {"questions": []}
+Respond with JSON: {"questions": ["Question 1?", "Question 2?", ...]}
+If no valid questions, return {"questions": []}
 
-Example input: "is it an animal um does it have four legs what about can it fly"
-Example output: {"questions": ["Is it an animal?", "Does it have four legs?", "Can it fly?"]}`;
+Examples:
+Input: "Is it alive? Is it an animal? Does it have legs?"
+Output: {"questions": ["Is it alive?", "Is it an animal?", "Does it have legs?"]}
+
+Input: "um is it like a person or is it maybe an object yeah is it something you can hold"
+Output: {"questions": ["Is it a person?", "Is it an object?", "Is it something you can hold?"]}`;
 
   const response = await fetch(OPENROUTER_CHAT_URL, {
     method: 'POST',
@@ -848,11 +857,28 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   const gameIndex = body.game ?? 0;
   const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
 
-  const allQuestions: string[] = [...(body.textQuestions || [])];
+  const allQuestions: string[] = [];
   let transcribedText: string | undefined;
   let rateLimited = false;
   let won = false;
   let secretWord: string | undefined;
+
+  // Parse textQuestions (raw transcripts from streaming) into discrete questions
+  if (body.textQuestions && body.textQuestions.length > 0 && !rateLimited) {
+    const canParse = await checkAndIncrementCost(env, ESTIMATED_COST_PER_PARSE_CENTS);
+    if (canParse) {
+      try {
+        // Combine all text questions into one transcript for parsing
+        const combinedText = body.textQuestions.join(' ');
+        const parsedQuestions = await parseQuestionsWithLLM(combinedText, env);
+        allQuestions.push(...parsedQuestions);
+      } catch (e) {
+        console.error('Parse questions error:', e);
+      }
+    } else {
+      rateLimited = true;
+    }
+  }
 
   // Legacy support: If audio provided, transcribe it (for non-streaming clients)
   if (body.audioBase64 && body.mimeType) {
