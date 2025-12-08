@@ -722,26 +722,45 @@ async function answerQuestionWithLLM(
     return { answer: 'yes', won: true };
   }
 
-  const prompt = `You are playing a word guessing game (like 20 Questions). The secret word is "${secret}".
+  const prompt = `You are playing 20 Questions. Secret word: "${secret}"
+Question: "${question}"
 
-The player asks: "${question}"
+WORD INFO (for spelling/letter questions):
+- First letter: "${secret[0].toUpperCase()}" (letter #${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.indexOf(secret[0].toUpperCase()) + 1}, A-M=first half, N-Z=second half)
+- Length: ${secret.length} letters
 
-IMPORTANT: For questions about the WORD ITSELF (spelling, letters, length, alphabet position), think step-by-step:
-- First letter of "${secret}" is "${secret[0].toUpperCase()}"
-- Word length is ${secret.length} letters
-- The first half of the alphabet is A-M (letters 1-13), second half is N-Z (letters 14-26)
-- "${secret[0].toUpperCase()}" is letter #${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.indexOf(secret[0].toUpperCase()) + 1} of 26
+ANSWER OPTIONS:
+- "yes" - clearly true
+- "no" - clearly false
+- "maybe" - uncertain or context-dependent
+- "so close" - they're describing the word almost exactly, using near-synonyms, or asking about the word's core meaning
+- "N/A" - not a yes/no question
 
-Answer with ONLY one of these responses:
-- "yes" - if the answer is clearly yes
-- "no" - if the answer is clearly no
-- "maybe" - if the answer is uncertain, partially true, or depends on context
-- "so close" - ONLY if the question reveals they are VERY close to guessing (e.g., asking about a very specific category the word belongs to, or a near-synonym)
-- "N/A" - if the question cannot be answered with yes/no, is unclear, or is not relevant
+EXAMPLES (learn the pattern):
 
-Be accurate and precise. For factual questions, verify your answer carefully.
+Secret: "guidance" | Q: "Is it about guiding people?" → "so close" (describes the word's core meaning!)
+Secret: "guidance" | Q: "Would 100 people know this word?" → "yes" (it's a common English word)
+Secret: "guidance" | Q: "Is it a noun?" → "yes"
+Secret: "guidance" | Q: "Is it a common noun?" → "yes" (guidance is commonly known)
 
-Respond with ONLY a JSON object: {"answer": "your_answer_here"}`;
+Secret: "happiness" | Q: "Is it about feeling good?" → "so close" (core meaning)
+Secret: "happiness" | Q: "Is it joy?" → "so close" (near-synonym)
+Secret: "happiness" | Q: "Is it an emotion?" → "yes"
+
+Secret: "bridge" | Q: "Does it connect things?" → "so close" (core function)
+Secret: "bridge" | Q: "Is it a structure?" → "yes"
+Secret: "bridge" | Q: "Is it made of wood?" → "maybe" (some are, some aren't)
+
+Secret: "whisper" | Q: "Is it about speaking quietly?" → "so close"
+Secret: "whisper" | Q: "Is it a verb?" → "yes"
+Secret: "whisper" | Q: "Can you do it?" → "yes"
+
+Secret: "ocean" | Q: "Is it a large body of water?" → "so close"
+Secret: "ocean" | Q: "Is it wet?" → "yes"
+
+BE GENEROUS with "so close" when they're clearly onto the concept. Answer accurately for factual questions.
+
+Respond: {"answer": "your_answer"}`;
 
   const response = await fetch(OPENROUTER_CHAT_URL, {
     method: 'POST',
