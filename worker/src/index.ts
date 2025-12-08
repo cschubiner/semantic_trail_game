@@ -41,7 +41,7 @@ const RERANK_MODEL = 'google/gemini-2.5-flash';
 const HINT_MODEL = 'anthropic/claude-sonnet-4.5';
 
 // LLM for answering questions in 20 Questions mode
-const QUESTIONS_ANSWER_MODEL = 'google/gemini-2.5-flash';
+const QUESTIONS_ANSWER_MODEL = 'openai/gpt-4.1';
 
 // LLM for parsing questions from speech (fast and cheap)
 const QUESTIONS_PARSE_MODEL = 'google/gemini-2.5-flash-lite';
