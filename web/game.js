@@ -982,7 +982,8 @@ function showHint(message) {
  * Render the 10 most recent attempts (includes duplicates to show what was tried)
  */
 function renderRecentGuesses() {
-  if (recentAttempts.length === 0) {
+  // Only show in Similarity mode
+  if (recentAttempts.length === 0 || currentMode === 'questions') {
     recentGuesses.classList.add('hidden');
     return;
   }
