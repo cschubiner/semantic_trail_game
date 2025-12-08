@@ -1356,18 +1356,24 @@ let qaHistory = []; // Array of { question, answer, timestamp, won }
 let questionsWon = false;
 let questionsSecretWord = null;
 
-// Audio recording state
+// Audio recording state - dual overlapping buffers
 let isRecording = false;
-let mediaRecorder = null;
-let audioChunks = [];
-let recordingInterval = null;
-const RECORDING_INTERVAL_MS = 10000; // 10 seconds
+let mediaRecorderA = null;  // Primary recorder
+let mediaRecorderB = null;  // Offset recorder (5s offset)
+let audioChunksA = [];
+let audioChunksB = [];
+let recordingIntervalA = null;
+let recordingIntervalB = null;
+let audioStream = null;  // Shared audio stream
+const RECORDING_INTERVAL_MS = 10000; // 10 seconds per buffer
+const BUFFER_OFFSET_MS = 5000; // 5 second offset between buffers
 
 // Questions mode DOM elements (lazy loaded)
 let questionsContainer, audioRecordBtn, audioStatusEl, audioStatusText;
 let audioIndicator, questionInput, askBtn, qaHistoryEl, noQuestionsEl;
 let transcriptionPreview, transcriptionText, questionCountEl;
 let modeSimBtn, modeQuestionsBtn;
+let questionsHintBtn, questionsHintDisplay;
 
 /**
  * Initialize Questions mode DOM references
@@ -1387,6 +1393,8 @@ function initQuestionsModeDOM() {
   questionCountEl = document.getElementById('question-count');
   modeSimBtn = document.getElementById('mode-similarity');
   modeQuestionsBtn = document.getElementById('mode-questions');
+  questionsHintBtn = document.getElementById('questions-hint-btn');
+  questionsHintDisplay = document.getElementById('questions-hint-display');
 
   // Set up event listeners
   if (audioRecordBtn) {
@@ -1405,6 +1413,9 @@ function initQuestionsModeDOM() {
   }
   if (modeQuestionsBtn) {
     modeQuestionsBtn.addEventListener('click', () => switchMode('questions'));
+  }
+  if (questionsHintBtn) {
+    questionsHintBtn.addEventListener('click', getQuestionsHint);
   }
 }
 
@@ -1457,41 +1468,53 @@ function switchMode(mode) {
 }
 
 // ============================================================
-// Audio Recording (MediaRecorder API)
+// Audio Recording (MediaRecorder API) - Dual Overlapping Buffers
 // ============================================================
 
 /**
- * Initialize MediaRecorder for audio capture
+ * Get preferred MIME type for audio recording
  */
-async function initMediaRecorder() {
+function getPreferredMimeType() {
+  if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm';
+  if (MediaRecorder.isTypeSupported('audio/mp4')) return 'audio/mp4';
+  return 'audio/webm';
+}
+
+/**
+ * Create a MediaRecorder for a given stream
+ */
+function createRecorder(stream, chunks, label) {
+  const mimeType = getPreferredMimeType();
+  const recorder = new MediaRecorder(stream, { mimeType });
+
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) {
+      chunks.push(event.data);
+    }
+  };
+
+  recorder.onstop = async () => {
+    if (chunks.length > 0 && !questionsWon) {
+      const chunksCopy = [...chunks];
+      chunks.length = 0; // Clear the array
+      await processAudioBuffer(chunksCopy, mimeType, label);
+    }
+  };
+
+  return recorder;
+}
+
+/**
+ * Initialize audio stream and recorders for dual buffer system
+ */
+async function initAudioSystem() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-    // Prefer webm for better browser support
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm')
-      ? 'audio/webm'
-      : MediaRecorder.isTypeSupported('audio/mp4')
-        ? 'audio/mp4'
-        : 'audio/webm';
-
-    mediaRecorder = new MediaRecorder(stream, { mimeType });
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        audioChunks.push(event.data);
-      }
-    };
-
-    mediaRecorder.onstop = async () => {
-      if (audioChunks.length > 0) {
-        await processAudioChunks();
-      }
-      audioChunks = [];
-    };
-
+    audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorderA = createRecorder(audioStream, audioChunksA, 'A');
+    mediaRecorderB = createRecorder(audioStream, audioChunksB, 'B');
     return true;
   } catch (error) {
-    console.error('Failed to initialize MediaRecorder:', error);
+    console.error('Failed to initialize audio system:', error);
     showStatus('Microphone access denied', 'error');
     return false;
   }
@@ -1509,7 +1532,9 @@ async function toggleRecording() {
 }
 
 /**
- * Start continuous audio recording
+ * Start continuous audio recording with overlapping buffers
+ * Buffer A: 0s-10s, 10s-20s, 20s-30s...
+ * Buffer B: 5s-15s, 15s-25s, 25s-35s... (5s offset)
  */
 async function startRecording() {
   if (questionsWon) {
@@ -1517,71 +1542,111 @@ async function startRecording() {
     return;
   }
 
-  if (!mediaRecorder) {
-    const success = await initMediaRecorder();
+  if (!audioStream) {
+    const success = await initAudioSystem();
     if (!success) return;
   }
 
   isRecording = true;
-  audioChunks = [];
-
-  try {
-    mediaRecorder.start();
-  } catch (e) {
-    console.error('Failed to start recording:', e);
-    isRecording = false;
-    return;
-  }
+  audioChunksA = [];
+  audioChunksB = [];
 
   // Update UI
   audioRecordBtn.classList.add('recording');
   audioRecordBtn.innerHTML = '<span class="record-icon">&#x23F9;</span> Stop Recording';
   audioIndicator.classList.add('active');
-  audioStatusText.textContent = 'Recording... (sends every 10s)';
+  audioStatusText.textContent = 'Recording... (overlapping buffers)';
 
   // Start timer on first recording if not started
   if (!timerStarted) {
     startTimer();
   }
 
-  // Set up interval to send audio every 10 seconds
-  recordingInterval = setInterval(() => {
-    if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
-      // Small delay then restart
+  // Start Buffer A immediately
+  try {
+    mediaRecorderA.start();
+    console.log('Buffer A started');
+  } catch (e) {
+    console.error('Failed to start Buffer A:', e);
+    isRecording = false;
+    return;
+  }
+
+  // Start Buffer B after 5 seconds (offset)
+  setTimeout(() => {
+    if (isRecording && !questionsWon) {
+      try {
+        mediaRecorderB.start();
+        console.log('Buffer B started (5s offset)');
+      } catch (e) {
+        console.error('Failed to start Buffer B:', e);
+      }
+    }
+  }, BUFFER_OFFSET_MS);
+
+  // Set up interval for Buffer A (every 10s, starting at 10s)
+  recordingIntervalA = setInterval(() => {
+    if (isRecording && mediaRecorderA && mediaRecorderA.state === 'recording') {
+      mediaRecorderA.stop();
       setTimeout(() => {
         if (isRecording && !questionsWon) {
-          audioChunks = [];
           try {
-            mediaRecorder.start();
+            mediaRecorderA.start();
+            console.log('Buffer A restarted');
           } catch (e) {
-            console.error('Failed to restart recording:', e);
+            console.error('Failed to restart Buffer A:', e);
           }
         }
       }, 100);
     }
   }, RECORDING_INTERVAL_MS);
+
+  // Set up interval for Buffer B (every 10s, starting at 15s = 5s offset + 10s)
+  setTimeout(() => {
+    if (isRecording && !questionsWon) {
+      recordingIntervalB = setInterval(() => {
+        if (isRecording && mediaRecorderB && mediaRecorderB.state === 'recording') {
+          mediaRecorderB.stop();
+          setTimeout(() => {
+            if (isRecording && !questionsWon) {
+              try {
+                mediaRecorderB.start();
+                console.log('Buffer B restarted');
+              } catch (e) {
+                console.error('Failed to restart Buffer B:', e);
+              }
+            }
+          }, 100);
+        }
+      }, RECORDING_INTERVAL_MS);
+    }
+  }, BUFFER_OFFSET_MS);
 }
 
 /**
- * Stop audio recording
+ * Stop audio recording (both buffers)
  */
 function stopRecording() {
   if (!isRecording) return;
 
   isRecording = false;
 
-  if (recordingInterval) {
-    clearInterval(recordingInterval);
-    recordingInterval = null;
+  // Clear intervals
+  if (recordingIntervalA) {
+    clearInterval(recordingIntervalA);
+    recordingIntervalA = null;
+  }
+  if (recordingIntervalB) {
+    clearInterval(recordingIntervalB);
+    recordingIntervalB = null;
   }
 
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    try {
-      mediaRecorder.stop();
-    } catch (e) {
-      console.error('Error stopping recording:', e);
-    }
+  // Stop both recorders
+  if (mediaRecorderA && mediaRecorderA.state === 'recording') {
+    try { mediaRecorderA.stop(); } catch (e) { console.error('Error stopping A:', e); }
+  }
+  if (mediaRecorderB && mediaRecorderB.state === 'recording') {
+    try { mediaRecorderB.stop(); } catch (e) { console.error('Error stopping B:', e); }
   }
 
   // Update UI
@@ -1592,12 +1657,12 @@ function stopRecording() {
 }
 
 /**
- * Process recorded audio chunks and send to backend
+ * Process an audio buffer and send to backend
  */
-async function processAudioChunks() {
-  if (audioChunks.length === 0 || questionsWon) return;
+async function processAudioBuffer(chunks, mimeType, label) {
+  if (chunks.length === 0 || questionsWon) return;
 
-  const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType });
+  const audioBlob = new Blob(chunks, { type: mimeType });
 
   // Convert to base64
   const reader = new FileReader();
@@ -1605,9 +1670,12 @@ async function processAudioChunks() {
 
   reader.onloadend = async () => {
     const base64Data = reader.result;
-    const base64Audio = base64Data.split(',')[1]; // Remove data:audio/webm;base64, prefix
+    const base64Audio = base64Data.split(',')[1];
 
-    audioStatusText.textContent = 'Processing speech...';
+    console.log(`Processing Buffer ${label}...`);
+    if (isRecording) {
+      audioStatusText.textContent = 'Processing speech...';
+    }
 
     try {
       const response = await fetch(`${API_BASE}/ask`, {
@@ -1615,7 +1683,7 @@ async function processAudioChunks() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           audioBase64: base64Audio,
-          mimeType: mediaRecorder.mimeType,
+          mimeType: mimeType,
           game: currentGameIndex,
         }),
       });
@@ -1627,15 +1695,22 @@ async function processAudioChunks() {
       const data = await response.json();
 
       // Show transcription preview
-      if (data.transcribedText) {
+      if (data.transcribedText && data.transcribedText.trim()) {
         transcriptionText.textContent = data.transcribedText;
         transcriptionPreview.classList.remove('hidden');
         setTimeout(() => transcriptionPreview.classList.add('hidden'), 5000);
       }
 
-      // Add answers to history
+      // Add answers to history (deduplicate by question text)
       for (const qa of data.answers) {
-        addQAToHistory(qa.question, qa.answer, data.won);
+        // Check if we already have this exact question recently
+        const isDuplicate = qaHistory.some(
+          existing => existing.question.toLowerCase() === qa.question.toLowerCase() &&
+                      Date.now() - existing.timestamp < 30000 // Within 30 seconds
+        );
+        if (!isDuplicate) {
+          addQAToHistory(qa.question, qa.answer, data.won);
+        }
       }
 
       // Check for win
@@ -1648,11 +1723,11 @@ async function processAudioChunks() {
       }
 
     } catch (error) {
-      console.error('Error processing audio:', error);
+      console.error(`Error processing Buffer ${label}:`, error);
       showStatus('Failed to process speech', 'error');
     } finally {
       if (isRecording) {
-        audioStatusText.textContent = 'Recording... (sends every 10s)';
+        audioStatusText.textContent = 'Recording... (overlapping buffers)';
       }
     }
   };
@@ -1782,6 +1857,69 @@ function getAnswerClass(answer) {
     case 'maybe': return 'answer-maybe';
     case 'so close': return 'answer-close';
     default: return 'answer-na';
+  }
+}
+
+/**
+ * Request an LLM-generated hint for Questions mode (2 minute penalty)
+ */
+async function getQuestionsHint() {
+  if (questionsWon) {
+    showStatus('Game already won!', 'info');
+    return;
+  }
+
+  if (qaHistory.length < 1) {
+    showStatus('Ask at least one question first!', 'info');
+    return;
+  }
+
+  // Start timer if not started (penalty still applies)
+  if (!timerStarted) {
+    startTimer();
+  }
+
+  // Add 2 minute (120 second) penalty for LLM hint
+  addTimerPenalty(120);
+
+  // Get recent Q&A (last 10 for context)
+  const recentQA = qaHistory.slice(-10).map(qa => ({
+    question: qa.question,
+    answer: qa.answer
+  }));
+
+  try {
+    if (questionsHintBtn) questionsHintBtn.disabled = true;
+    showStatus('Getting hint from AI...', 'info');
+
+    const response = await fetch(`${API_BASE}/questions-hint`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ recentQA, game: currentGameIndex }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to get hint');
+    }
+
+    const data = await response.json();
+
+    if (data.rateLimited) {
+      showStatus('LLM hint rate limited, try again later', 'info');
+    } else {
+      // Show hint in the Questions mode hint display
+      if (questionsHintDisplay) {
+        questionsHintDisplay.textContent = data.hint;
+        questionsHintDisplay.classList.remove('hidden');
+      }
+      showStatus('', '');
+    }
+  } catch (error) {
+    console.error('Error getting Questions hint:', error);
+    showStatus(`Failed to get hint: ${error.message}`, 'error');
+  } finally {
+    if (questionsHintBtn) questionsHintBtn.disabled = false;
   }
 }
 

@@ -57,8 +57,9 @@ const ESTIMATED_COST_PER_PARSE_CENTS = 0.03;
 // Gemini 2.5 Flash for question answering: ~300 tokens = ~0.03 cents
 const ESTIMATED_COST_PER_ANSWER_CENTS = 0.05;
 
-// OpenAI Whisper API
-const OPENAI_WHISPER_URL = 'https://api.openai.com/v1/audio/transcriptions';
+// OpenAI Transcription API (GPT-4o-mini-transcribe)
+const OPENAI_TRANSCRIPTION_URL = 'https://api.openai.com/v1/audio/transcriptions';
+const TRANSCRIPTION_MODEL = 'gpt-4o-mini-transcribe';
 
 // Similarity to score mapping (non-linear)
 // Piecewise similarity->score mapping tuned for numeric words (less generous)
@@ -173,6 +174,16 @@ interface AskResponse {
   won?: boolean;
   secretWord?: string;
   error?: string;
+}
+
+interface QuestionsHintRequest {
+  recentQA: Array<{ question: string; answer: string }>;
+  game?: number;
+}
+
+interface QuestionsHintResponse {
+  hint: string;
+  rateLimited?: boolean;
 }
 
 /**
@@ -580,10 +591,10 @@ async function transcribeAudio(
   const formData = new FormData();
   const blob = new Blob([bytes], { type: mimeType });
   formData.append('file', blob, `audio.${ext}`);
-  formData.append('model', 'whisper-1');
+  formData.append('model', TRANSCRIPTION_MODEL);
   formData.append('language', 'en');
 
-  const response = await fetch(OPENAI_WHISPER_URL, {
+  const response = await fetch(OPENAI_TRANSCRIPTION_URL, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
@@ -678,6 +689,12 @@ async function answerQuestionWithLLM(
 
 The player asks: "${question}"
 
+IMPORTANT: For questions about the WORD ITSELF (spelling, letters, length, alphabet position), think step-by-step:
+- First letter of "${secret}" is "${secret[0].toUpperCase()}"
+- Word length is ${secret.length} letters
+- The first half of the alphabet is A-M (letters 1-13), second half is N-Z (letters 14-26)
+- "${secret[0].toUpperCase()}" is letter #${'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.indexOf(secret[0].toUpperCase()) + 1} of 26
+
 Answer with ONLY one of these responses:
 - "yes" - if the answer is clearly yes
 - "no" - if the answer is clearly no
@@ -685,7 +702,7 @@ Answer with ONLY one of these responses:
 - "so close" - ONLY if the question reveals they are VERY close to guessing (e.g., asking about a very specific category the word belongs to, or a near-synonym)
 - "N/A" - if the question cannot be answered with yes/no, is unclear, or is not relevant
 
-Be accurate and helpful. The goal is for the player to guess the word.
+Be accurate and precise. For factual questions, verify your answer carefully.
 
 Respond with ONLY a JSON object: {"answer": "your_answer_here"}`;
 
@@ -820,6 +837,106 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
   };
 
   return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+}
+
+/**
+ * Handle POST /questions-hint - Get a vague hint for Questions mode based on Q&A history
+ */
+async function handleQuestionsHint(request: Request, env: Env): Promise<Response> {
+  let body: QuestionsHintRequest;
+  try {
+    body = await request.json() as QuestionsHintRequest;
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' } as ErrorResponse, 400, request, env);
+  }
+
+  if (!body.recentQA || !Array.isArray(body.recentQA)) {
+    return jsonResponse({ error: 'Missing recentQA array' } as ErrorResponse, 400, request, env);
+  }
+
+  const gameIndex = body.game ?? 0;
+
+  // Check budget before making LLM call
+  const canProceed = await checkAndIncrementCost(env, ESTIMATED_COST_PER_HINT_CENTS);
+  if (!canProceed) {
+    const response: QuestionsHintResponse = {
+      hint: 'Hint unavailable (rate limited)',
+      rateLimited: true,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+
+  const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
+
+  // Build Q&A summary for the prompt
+  const qaList = body.recentQA.slice(-10).map(qa => `Q: ${qa.question} → ${qa.answer}`).join('\n');
+
+  const prompt = `You are playing 20 Questions. The secret word is "${secret}".
+
+Here are the player's recent questions and answers:
+${qaList}
+
+Your job: Give ONE cryptic, almost-useless hint that gently redirects them. They need a nudge in the right direction.
+
+RULES (strict):
+- Maximum 5-7 words
+- Be EXTREMELY vague and abstract
+- Do NOT describe what the word IS or DOES directly
+- Do NOT use synonyms, rhymes, or obvious category words
+- Reference a distant association, mood, or abstract quality only
+- Consider what they've learned from YES/NO answers so far
+
+EXAMPLES of good hints (cryptic, poetic, indirect):
+- "Think broader, not deeper"
+- "The answer hides in plain sight"
+- "Less abstract, more tangible"
+- "Consider what connects them all"
+
+Use their Q&A history to gently redirect without giving it away.
+
+Hint:`;
+
+  try {
+    const response = await fetch(OPENROUTER_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: HINT_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.7,
+        max_tokens: 100,
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`LLM API error: ${response.status} - ${text}`);
+    }
+
+    const data = await response.json() as {
+      choices: Array<{ message: { content: string } }>;
+    };
+
+    const hint = data.choices[0]?.message?.content?.trim() || 'No hint available';
+
+    const hintResponse: QuestionsHintResponse = {
+      hint,
+      rateLimited: false,
+    };
+    return jsonResponse(hintResponse as unknown as ScoreResponse, 200, request, env);
+
+  } catch (error) {
+    console.error('Error in Questions hint:', error);
+    return jsonResponse(
+      { error: `LLM hint error: ${error instanceof Error ? error.message : 'Unknown error'}` },
+      500,
+      request,
+      env
+    );
+  }
 }
 
 /**
@@ -1201,6 +1318,11 @@ export default {
     // Questions mode endpoint
     if (url.pathname === '/ask' && request.method === 'POST') {
       return handleAsk(request, env);
+    }
+
+    // Questions mode hint endpoint
+    if (url.pathname === '/questions-hint' && request.method === 'POST') {
+      return handleQuestionsHint(request, env);
     }
 
     // Health check endpoint
