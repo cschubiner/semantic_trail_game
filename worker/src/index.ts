@@ -34,11 +34,14 @@ const STOP_WORDS = new Set([
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/embeddings';
 const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-// LLM for re-ranking
+// LLM for re-ranking and question parsing
 const RERANK_MODEL = 'google/gemini-2.5-flash';
 
 // LLM for hints
 const HINT_MODEL = 'anthropic/claude-sonnet-4.5';
+
+// LLM for answering questions in 20 Questions mode
+const QUESTIONS_ANSWER_MODEL = 'deepseek/deepseek-v3.2-exp';
 
 // Cost protection: $2/hour budget
 const HOURLY_BUDGET_CENTS = 200; // $2.00 in cents
@@ -184,6 +187,20 @@ interface QuestionsHintRequest {
 interface QuestionsHintResponse {
   hint: string;
   rateLimited?: boolean;
+}
+
+// === Similarity Mode Transcription Types ===
+
+interface TranscribeGuessRequest {
+  audioBase64: string;
+  mimeType: string;
+}
+
+interface TranscribeGuessResponse {
+  transcribedText?: string;
+  words: string[];
+  rateLimited?: boolean;
+  error?: string;
 }
 
 /**
@@ -713,7 +730,7 @@ Respond with ONLY a JSON object: {"answer": "your_answer_here"}`;
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: RERANK_MODEL,
+      model: QUESTIONS_ANSWER_MODEL,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 50,
@@ -735,12 +752,16 @@ Respond with ONLY a JSON object: {"answer": "your_answer_here"}`;
       jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
     }
     const parsed = JSON.parse(jsonStr);
-    const answer = parsed.answer as QuestionAnswer;
-    // Validate answer is one of the allowed values
-    const validAnswers: QuestionAnswer[] = ['yes', 'no', 'maybe', 'so close', 'N/A'];
-    if (!validAnswers.includes(answer)) {
-      return { answer: 'N/A', won: false };
-    }
+    const answerRaw = (parsed.answer || '').toString().toLowerCase().trim();
+
+    // Normalize various formats DeepSeek might return
+    let answer: QuestionAnswer;
+    if (answerRaw === 'yes') answer = 'yes';
+    else if (answerRaw === 'no') answer = 'no';
+    else if (answerRaw === 'maybe') answer = 'maybe';
+    else if (answerRaw === 'so close' || answerRaw === 'soclose') answer = 'so close';
+    else answer = 'N/A';
+
     return { answer, won: false };
   } catch {
     console.error('Failed to parse answer JSON:', content);
@@ -932,6 +953,65 @@ Hint:`;
     console.error('Error in Questions hint:', error);
     return jsonResponse(
       { error: `LLM hint error: ${error instanceof Error ? error.message : 'Unknown error'}` },
+      500,
+      request,
+      env
+    );
+  }
+}
+
+/**
+ * Handle POST /transcribe-guess - Transcribe audio and extract word guesses for Similarity mode
+ */
+async function handleTranscribeGuess(request: Request, env: Env): Promise<Response> {
+  let body: TranscribeGuessRequest;
+  try {
+    body = await request.json() as TranscribeGuessRequest;
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' } as ErrorResponse, 400, request, env);
+  }
+
+  if (!body.audioBase64 || !body.mimeType) {
+    return jsonResponse({ error: 'Missing audioBase64 or mimeType' } as ErrorResponse, 400, request, env);
+  }
+
+  // Check budget before transcription
+  const canTranscribe = await checkAndIncrementCost(env, ESTIMATED_COST_PER_TRANSCRIBE_CENTS);
+  if (!canTranscribe) {
+    const response: TranscribeGuessResponse = {
+      words: [],
+      rateLimited: true,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+
+  try {
+    const transcribedText = await transcribeAudio(body.audioBase64, body.mimeType, env);
+
+    // Extract words from transcription (only valid guess words)
+    const words: string[] = [];
+    if (transcribedText) {
+      const rawWords = transcribedText.toLowerCase().split(/\s+/);
+      for (const word of rawWords) {
+        // Only keep words that are valid guesses (letters only, 3+ chars, not stop words)
+        const cleaned = word.replace(/[^a-z]/g, '');
+        if (cleaned.length >= 3 && /^[a-z]+$/.test(cleaned) && !STOP_WORDS.has(cleaned)) {
+          words.push(cleaned);
+        }
+      }
+    }
+
+    const response: TranscribeGuessResponse = {
+      transcribedText,
+      words,
+      rateLimited: false,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+
+  } catch (error) {
+    console.error('Transcription error:', error);
+    return jsonResponse(
+      { error: `Transcription error: ${error instanceof Error ? error.message : 'Unknown error'}` },
       500,
       request,
       env
@@ -1323,6 +1403,11 @@ export default {
     // Questions mode hint endpoint
     if (url.pathname === '/questions-hint' && request.method === 'POST') {
       return handleQuestionsHint(request, env);
+    }
+
+    // Similarity mode transcription endpoint
+    if (url.pathname === '/transcribe-guess' && request.method === 'POST') {
+      return handleTranscribeGuess(request, env);
     }
 
     // Health check endpoint

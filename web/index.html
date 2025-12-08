@@ -67,6 +67,18 @@
       <!-- Mic status -->
       <div id="mic-status" class="mic-status hidden">Listening...</div>
 
+      <!-- GPT-4o Transcribe Recording (Similarity Mode) -->
+      <div class="transcribe-recording">
+        <button id="transcribe-record-btn" class="transcribe-record-btn" title="Record using GPT-4o-mini-transcribe (continuous)">
+          <span class="record-icon">&#x23FA;</span>
+          GPT-4o Transcribe
+        </button>
+        <div id="transcribe-status" class="transcribe-status hidden">
+          <div class="transcribe-indicator" id="transcribe-indicator"></div>
+          <span id="transcribe-status-text">Recording...</span>
+        </div>
+      </div>
+
       <!-- Hint/Reveal buttons -->
       <div class="hint-buttons">
         <button id="hint-letter-btn" class="hint-btn" title="Show first letter (+1 min)">

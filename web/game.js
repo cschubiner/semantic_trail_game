@@ -755,6 +755,12 @@ function handleWin(word) {
   // Stop the timer and re-ranking
   stopTimer();
   stopRerankInterval();
+
+  // Stop Similarity mode transcribe recording if active
+  if (typeof stopSimRecording === 'function') {
+    stopSimRecording();
+  }
+
   const elapsed = getElapsedSeconds();
   const finalTier = getCurrentTier(elapsed);
 
@@ -1276,6 +1282,286 @@ function startMicGuess() {
 }
 
 // ============================================================
+// GPT-4o Transcribe Recording (Similarity Mode)
+// ============================================================
+
+// Transcribe recording state (Similarity mode)
+let simIsRecording = false;
+let simMediaRecorderA = null;
+let simMediaRecorderB = null;
+let simAudioChunksA = [];
+let simAudioChunksB = [];
+let simRecordingIntervalA = null;
+let simRecordingIntervalB = null;
+let simAudioStream = null;
+const SIM_RECORDING_INTERVAL_MS = 5000; // 5 seconds per buffer
+const SIM_BUFFER_OFFSET_MS = 2500; // 2.5 second offset between buffers
+
+// DOM elements for transcribe recording
+const transcribeRecordBtn = document.getElementById('transcribe-record-btn');
+const transcribeStatus = document.getElementById('transcribe-status');
+const transcribeIndicator = document.getElementById('transcribe-indicator');
+const transcribeStatusText = document.getElementById('transcribe-status-text');
+
+/**
+ * Get preferred MIME type for audio recording (shared with Questions mode)
+ */
+function getSimPreferredMimeType() {
+  if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm';
+  if (MediaRecorder.isTypeSupported('audio/mp4')) return 'audio/mp4';
+  return 'audio/webm';
+}
+
+/**
+ * Create a MediaRecorder for Similarity mode transcription
+ */
+function createSimRecorder(stream, chunks, label) {
+  const mimeType = getSimPreferredMimeType();
+  const recorder = new MediaRecorder(stream, { mimeType });
+
+  recorder.ondataavailable = (event) => {
+    if (event.data.size > 0) {
+      chunks.push(event.data);
+    }
+  };
+
+  recorder.onstop = async () => {
+    if (chunks.length > 0 && !gameWon) {
+      const chunksCopy = [...chunks];
+      chunks.length = 0;
+      await processSimAudioBuffer(chunksCopy, mimeType, label);
+    }
+  };
+
+  return recorder;
+}
+
+/**
+ * Initialize audio stream for Similarity mode transcription
+ */
+async function initSimAudioSystem() {
+  try {
+    simAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    simMediaRecorderA = createSimRecorder(simAudioStream, simAudioChunksA, 'A');
+    simMediaRecorderB = createSimRecorder(simAudioStream, simAudioChunksB, 'B');
+    return true;
+  } catch (error) {
+    console.error('Failed to initialize Similarity audio system:', error);
+    showStatus('Microphone access denied', 'error');
+    return false;
+  }
+}
+
+/**
+ * Toggle Similarity mode transcribe recording
+ */
+async function toggleSimRecording() {
+  if (simIsRecording) {
+    stopSimRecording();
+  } else {
+    await startSimRecording();
+  }
+}
+
+/**
+ * Start Similarity mode transcribe recording with overlapping buffers
+ */
+async function startSimRecording() {
+  if (gameWon) {
+    showStatus('Game over! Start a new game.', 'info');
+    return;
+  }
+
+  if (!simAudioStream) {
+    const success = await initSimAudioSystem();
+    if (!success) return;
+  }
+
+  // Stop Web Speech API mic if active
+  if (micShouldBeActive) {
+    micShouldBeActive = false;
+    try { recognition?.abort(); } catch (e) {}
+    micBtn.classList.remove('listening');
+    micStatus.classList.add('hidden');
+  }
+
+  simIsRecording = true;
+  simAudioChunksA = [];
+  simAudioChunksB = [];
+
+  // Update UI
+  if (transcribeRecordBtn) {
+    transcribeRecordBtn.classList.add('recording');
+    transcribeRecordBtn.innerHTML = '<span class="record-icon">&#x23F9;</span> Stop Recording';
+  }
+  if (transcribeIndicator) transcribeIndicator.classList.add('active');
+  if (transcribeStatus) transcribeStatus.classList.remove('hidden');
+  if (transcribeStatusText) transcribeStatusText.textContent = 'Recording... (dual buffers)';
+
+  // Start timer on first recording
+  if (!timerStarted) {
+    startTimer();
+  }
+
+  // Start Buffer A immediately
+  try {
+    simMediaRecorderA.start();
+    console.log('Sim Buffer A started');
+  } catch (e) {
+    console.error('Failed to start Sim Buffer A:', e);
+    simIsRecording = false;
+    return;
+  }
+
+  // Start Buffer B after offset
+  setTimeout(() => {
+    if (simIsRecording && !gameWon) {
+      try {
+        simMediaRecorderB.start();
+        console.log('Sim Buffer B started (2.5s offset)');
+      } catch (e) {
+        console.error('Failed to start Sim Buffer B:', e);
+      }
+    }
+  }, SIM_BUFFER_OFFSET_MS);
+
+  // Set up interval for Buffer A
+  simRecordingIntervalA = setInterval(() => {
+    if (simIsRecording && simMediaRecorderA && simMediaRecorderA.state === 'recording') {
+      simMediaRecorderA.stop();
+      setTimeout(() => {
+        if (simIsRecording && !gameWon) {
+          try {
+            simMediaRecorderA.start();
+            console.log('Sim Buffer A restarted');
+          } catch (e) {
+            console.error('Failed to restart Sim Buffer A:', e);
+          }
+        }
+      }, 100);
+    }
+  }, SIM_RECORDING_INTERVAL_MS);
+
+  // Set up interval for Buffer B (after initial offset)
+  setTimeout(() => {
+    if (simIsRecording && !gameWon) {
+      simRecordingIntervalB = setInterval(() => {
+        if (simIsRecording && simMediaRecorderB && simMediaRecorderB.state === 'recording') {
+          simMediaRecorderB.stop();
+          setTimeout(() => {
+            if (simIsRecording && !gameWon) {
+              try {
+                simMediaRecorderB.start();
+                console.log('Sim Buffer B restarted');
+              } catch (e) {
+                console.error('Failed to restart Sim Buffer B:', e);
+              }
+            }
+          }, 100);
+        }
+      }, SIM_RECORDING_INTERVAL_MS);
+    }
+  }, SIM_BUFFER_OFFSET_MS);
+}
+
+/**
+ * Stop Similarity mode transcribe recording
+ */
+function stopSimRecording() {
+  if (!simIsRecording) return;
+
+  simIsRecording = false;
+
+  // Clear intervals
+  if (simRecordingIntervalA) {
+    clearInterval(simRecordingIntervalA);
+    simRecordingIntervalA = null;
+  }
+  if (simRecordingIntervalB) {
+    clearInterval(simRecordingIntervalB);
+    simRecordingIntervalB = null;
+  }
+
+  // Stop both recorders
+  if (simMediaRecorderA && simMediaRecorderA.state === 'recording') {
+    try { simMediaRecorderA.stop(); } catch (e) { console.error('Error stopping Sim A:', e); }
+  }
+  if (simMediaRecorderB && simMediaRecorderB.state === 'recording') {
+    try { simMediaRecorderB.stop(); } catch (e) { console.error('Error stopping Sim B:', e); }
+  }
+
+  // Update UI
+  if (transcribeRecordBtn) {
+    transcribeRecordBtn.classList.remove('recording');
+    transcribeRecordBtn.innerHTML = '<span class="record-icon">&#x23FA;</span> GPT-4o Transcribe';
+  }
+  if (transcribeIndicator) transcribeIndicator.classList.remove('active');
+  if (transcribeStatus) transcribeStatus.classList.add('hidden');
+}
+
+/**
+ * Process Similarity mode audio buffer and submit guesses
+ */
+async function processSimAudioBuffer(chunks, mimeType, label) {
+  if (chunks.length === 0 || gameWon) return;
+
+  const audioBlob = new Blob(chunks, { type: mimeType });
+
+  const reader = new FileReader();
+  reader.readAsDataURL(audioBlob);
+
+  reader.onloadend = async () => {
+    const base64Data = reader.result;
+    const base64Audio = base64Data.split(',')[1];
+
+    console.log(`Processing Sim Buffer ${label}...`);
+    if (simIsRecording && transcribeStatusText) {
+      transcribeStatusText.textContent = 'Processing speech...';
+    }
+
+    try {
+      const response = await fetch(`${API_BASE}/transcribe-guess`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          audioBase64: base64Audio,
+          mimeType: mimeType,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to transcribe audio');
+      }
+
+      const data = await response.json();
+
+      // Submit each extracted word as a guess
+      if (data.words && data.words.length > 0) {
+        console.log('Transcribed words:', data.words);
+        for (const word of data.words) {
+          // Check if not already guessed
+          if (!guesses.some(g => g.word === word)) {
+            submitGuess(word);
+          }
+        }
+      }
+
+      if (data.rateLimited) {
+        showStatus('Rate limited - try again later', 'info');
+      }
+
+    } catch (error) {
+      console.error(`Error processing Sim Buffer ${label}:`, error);
+      showStatus('Failed to process speech', 'error');
+    } finally {
+      if (simIsRecording && transcribeStatusText) {
+        transcribeStatusText.textContent = 'Recording... (dual buffers)';
+      }
+    }
+  };
+}
+
+// ============================================================
 // Event Listeners
 // ============================================================
 
@@ -1291,6 +1577,11 @@ guessBtn.addEventListener('click', () => submitGuess());
 
 // Mic button click
 micBtn.addEventListener('click', startMicGuess);
+
+// Transcribe record button click
+if (transcribeRecordBtn) {
+  transcribeRecordBtn.addEventListener('click', toggleSimRecording);
+}
 
 // Hint and reveal button clicks
 hintLetterBtn.addEventListener('click', () => getHint('letter'));
@@ -1365,8 +1656,8 @@ let audioChunksB = [];
 let recordingIntervalA = null;
 let recordingIntervalB = null;
 let audioStream = null;  // Shared audio stream
-const RECORDING_INTERVAL_MS = 10000; // 10 seconds per buffer
-const BUFFER_OFFSET_MS = 5000; // 5 second offset between buffers
+const RECORDING_INTERVAL_MS = 5000; // 5 seconds per buffer
+const BUFFER_OFFSET_MS = 2500; // 2.5 second offset between buffers
 
 // Questions mode DOM elements (lazy loaded)
 let questionsContainer, audioRecordBtn, audioStatusEl, audioStatusText;
@@ -2089,6 +2380,10 @@ resetGame = function() {
   resetTimer();
   resetRerankState();
   resetQuestionsMode();
+  // Stop Similarity mode transcribe recording if active
+  if (typeof stopSimRecording === 'function') {
+    stopSimRecording();
+  }
   setInputDisabled(false);
   showStatus('Game reset!', 'success');
   renderGuesses();
@@ -2120,6 +2415,10 @@ newRandomGame = function() {
   resetTimer();
   resetRerankState();
   resetQuestionsMode();
+  // Stop Similarity mode transcribe recording if active
+  if (typeof stopSimRecording === 'function') {
+    stopSimRecording();
+  }
   setInputDisabled(false);
   showStatus('New random word!', 'success');
   renderGuesses();
