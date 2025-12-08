@@ -2135,12 +2135,12 @@ function calculateGravityScore(qa, index, totalItems, now) {
   // Decay function: importance decays slower for higher-weighted answers
   // Base decay per minute, reduced by weight
   // Higher weight = slower decay
-  const decayRate = 0.1 / weight; // N/A decays 5x faster than "so close"
+  const decayRate = 0.15 / weight; // N/A decays 5x faster than "so close"
   const decayMultiplier = Math.exp(-decayRate * ageMinutes);
 
   // Combined score: recency + (weight bonus * decay)
-  // Weight bonus keeps important answers buoyant
-  const weightBonus = (weight - 1) * 0.3 * decayMultiplier;
+  // Weight bonus keeps important answers buoyant (reduced for more recency bias)
+  const weightBonus = (weight - 1) * 0.15 * decayMultiplier;
 
   return recencyScore + weightBonus;
 }
