@@ -1003,6 +1003,21 @@ footer a:hover {
   font-size: 0.85rem;
 }
 
+/* Loading state for model answers */
+.answer-loading {
+  color: var(--text-muted);
+  background: rgba(136, 136, 136, 0.1);
+}
+
+.answer-loading .model-result {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
 .no-questions {
   text-align: center;
   color: var(--text-muted);

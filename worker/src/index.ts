@@ -177,6 +177,22 @@ interface AskRequest {
   game?: number;
 }
 
+interface AskModelRequest {
+  question: string;
+  model: string;
+  game?: number;
+}
+
+interface AskModelResponse {
+  question: string;
+  model: string;
+  answer: QuestionAnswer;
+  won: boolean;
+  secretWord?: string;
+  rateLimited?: boolean;
+  error?: string;
+}
+
 interface AskResponse {
   transcribedText?: string;
   answers: Array<{
@@ -1034,6 +1050,67 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
 }
 
 /**
+ * Handle POST /ask-model - Answer a single question with a specific model
+ * Frontend calls this 3 times in parallel (once per model) for faster UX
+ */
+async function handleAskModel(request: Request, env: Env): Promise<Response> {
+  let body: AskModelRequest;
+  try {
+    body = await request.json() as AskModelRequest;
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' } as ErrorResponse, 400, request, env);
+  }
+
+  const { question, model } = body;
+  if (!question || !model) {
+    return jsonResponse({ error: 'Missing question or model' } as ErrorResponse, 400, request, env);
+  }
+
+  // Validate model is in our allowed list
+  if (!QUESTIONS_ANSWER_MODELS.includes(model)) {
+    return jsonResponse({ error: 'Invalid model' } as ErrorResponse, 400, request, env);
+  }
+
+  const gameIndex = body.game ?? 0;
+  const secret = await getSecretWord(env.SECRET_SALT, gameIndex);
+
+  // Check budget (cost per single model call)
+  const canAnswer = await checkAndIncrementCost(env, ESTIMATED_COST_PER_ANSWER_CENTS);
+  if (!canAnswer) {
+    const response: AskModelResponse = {
+      question,
+      model,
+      answer: 'N/A',
+      won: false,
+      rateLimited: true,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+
+  try {
+    const result = await answerQuestionWithLLM(question, secret, env, model);
+    const response: AskModelResponse = {
+      question,
+      model,
+      answer: result.answer,
+      won: result.won,
+      secretWord: result.won ? secret : undefined,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  } catch (e) {
+    console.error(`Error answering with ${model}:`, e);
+    const response: AskModelResponse = {
+      question,
+      model,
+      answer: 'N/A',
+      won: false,
+      error: 'Failed to get answer',
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+}
+
+/**
  * Handle POST /questions-hint - Get a vague hint for Questions mode based on Q&A history
  */
 async function handleQuestionsHint(request: Request, env: Env): Promise<Response> {
@@ -1571,6 +1648,16 @@ export default {
     // Questions mode endpoint
     if (url.pathname === '/ask' && request.method === 'POST') {
       return handleAsk(request, env);
+    }
+
+    // Single-model question endpoint (for parallel frontend requests)
+    if (url.pathname === '/ask-model' && request.method === 'POST') {
+      return handleAskModel(request, env);
+    }
+
+    // Get available models for question answering
+    if (url.pathname === '/models' && request.method === 'GET') {
+      return jsonResponse({ models: QUESTIONS_ANSWER_MODELS } as unknown as ScoreResponse, 200, request, env);
     }
 
     // Realtime token endpoint (for streaming transcription)

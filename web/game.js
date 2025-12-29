@@ -2087,47 +2087,81 @@ async function sendRevision() {
 async function sendQuestionToBackend(text, questionId) {
   if (questionsWon) return;
 
-  try {
-    const response = await fetch(`${API_BASE}/ask`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        textQuestions: [text],
-        game: currentGameIndex,
-        questionId: questionId,  // For tracking/dedup on backend if needed
-      }),
-    });
+  // Check for duplicates - same question text within 30 seconds
+  const isDuplicate = qaHistory.some(
+    existing => existing.question.toLowerCase() === text.toLowerCase() &&
+                Date.now() - existing.timestamp < 30000
+  );
+  if (isDuplicate) return;
 
-    if (!response.ok) {
-      throw new Error('Failed to process transcript');
-    }
+  // Use the same parallel model approach as submitQuestion
+  const qaIndex = qaHistory.length;
+  const placeholderModelAnswers = QUESTION_MODELS.map(model => ({
+    model,
+    answer: 'loading'
+  }));
 
-    const data = await response.json();
+  qaHistory.push({
+    question: text,
+    answer: 'loading',
+    modelAnswers: placeholderModelAnswers,
+    timestamp: Date.now(),
+    won: false
+  });
+  renderQAHistory();
 
-    // Add answers to history (with dedup)
-    for (const qa of data.answers) {
-      // Check for duplicates - same question text within 30 seconds
-      const isDuplicate = qaHistory.some(
-        existing => existing.question.toLowerCase() === qa.question.toLowerCase() &&
-                    Date.now() - existing.timestamp < 30000
-      );
-      if (!isDuplicate) {
-        addQAToHistory(qa.question, qa.answer, data.won, qa.modelAnswers || []);
+  // Fire off parallel requests to all models
+  const modelPromises = QUESTION_MODELS.map(async (model) => {
+    try {
+      const response = await fetch(`${API_BASE}/ask-model`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: text,
+          model,
+          game: currentGameIndex,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to get answer');
       }
-    }
 
-    // Check for win
-    if (data.won) {
-      handleQuestionsWin(data.secretWord);
+      const data = await response.json();
+      updateModelAnswer(qaIndex, model, data.answer, data.won, data.secretWord);
+      return data;
+    } catch (error) {
+      console.error(`Error asking ${model}:`, error);
+      updateModelAnswer(qaIndex, model, 'N/A', false);
+      return { model, answer: 'N/A', won: false };
     }
+  });
 
-    if (data.rateLimited) {
-      showStatus('Rate limited - try again in a minute', 'info');
-    }
+  const results = await Promise.all(modelPromises);
 
-  } catch (error) {
-    console.error('Error sending question to backend:', error);
+  // Check if any model detected a hint request
+  const hintResult = results.find(r => r.answer?.toLowerCase() === 'hint');
+  if (hintResult) {
+    qaHistory.splice(qaIndex, 1);
+    renderQAHistory();
+    showStatus('Getting hint...', 'info');
+    getQuestionsHint();
+    return;
   }
+
+  // Check for win
+  const winResult = results.find(r => r.won);
+  if (winResult) {
+    handleQuestionsWin(winResult.secretWord);
+  }
+
+  // Check for rate limiting
+  const rateLimited = results.some(r => r.rateLimited);
+  if (rateLimited) {
+    showStatus('Rate limited - try again in a minute', 'info');
+  }
+
+  saveGameState();
 }
 
 /**
@@ -2391,6 +2425,13 @@ function stopRecording() {
 /**
  * Submit a typed question
  */
+// Available models for question answering (fetched from backend)
+const QUESTION_MODELS = [
+  'openai/gpt-5.2',
+  'google/gemini-3-flash-preview',
+  'anthropic/claude-sonnet-4.5'
+];
+
 async function submitQuestion(questionText = null) {
   const question = (questionText || questionInput?.value || '').trim();
 
@@ -2410,49 +2451,108 @@ async function submitQuestion(questionText = null) {
 
   showStatus('Asking...', 'info');
 
-  try {
-    const response = await fetch(`${API_BASE}/ask`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        textQuestions: [question],
-        game: currentGameIndex,
-      }),
-    });
+  // Create a placeholder entry with loading state for all models
+  const qaIndex = qaHistory.length;
+  const placeholderModelAnswers = QUESTION_MODELS.map(model => ({
+    model,
+    answer: 'loading'
+  }));
 
-    if (!response.ok) {
-      throw new Error('Failed to get answer');
-    }
+  qaHistory.push({
+    question,
+    answer: 'loading',
+    modelAnswers: placeholderModelAnswers,
+    timestamp: Date.now(),
+    won: false
+  });
+  renderQAHistory();
 
-    const data = await response.json();
+  // Fire off parallel requests to all models
+  const modelPromises = QUESTION_MODELS.map(async (model) => {
+    try {
+      const response = await fetch(`${API_BASE}/ask-model`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question,
+          model,
+          game: currentGameIndex,
+        }),
+      });
 
-    if (data.answers && data.answers.length > 0) {
-      const qa = data.answers[0];
-
-      // If user asked for a hint, trigger the hint function instead of adding to history
-      if (qa.answer.toLowerCase() === 'hint') {
-        showStatus('Getting hint...', 'info');
-        getQuestionsHint();
-        return;
+      if (!response.ok) {
+        throw new Error('Failed to get answer');
       }
 
-      addQAToHistory(qa.question, qa.answer, data.won, qa.modelAnswers || []);
-      showStatus('', '');
-    }
+      const data = await response.json();
 
-    // Check for win
-    if (data.won) {
-      handleQuestionsWin(data.secretWord);
-    }
+      // Update the specific model's answer in the QA entry
+      updateModelAnswer(qaIndex, model, data.answer, data.won, data.secretWord);
 
-    if (data.rateLimited) {
-      showStatus('Rate limited - try again later', 'info');
+      return data;
+    } catch (error) {
+      console.error(`Error asking ${model}:`, error);
+      updateModelAnswer(qaIndex, model, 'N/A', false);
+      return { model, answer: 'N/A', won: false };
     }
+  });
 
-  } catch (error) {
-    console.error('Error asking question:', error);
-    showStatus('Failed to get answer', 'error');
+  // Wait for all to complete (UI updates happen progressively via updateModelAnswer)
+  const results = await Promise.all(modelPromises);
+
+  // Check if any model detected a hint request
+  const hintResult = results.find(r => r.answer?.toLowerCase() === 'hint');
+  if (hintResult) {
+    // Remove the QA entry and get a hint instead
+    qaHistory.splice(qaIndex, 1);
+    renderQAHistory();
+    showStatus('Getting hint...', 'info');
+    getQuestionsHint();
+    return;
   }
+
+  // Check for win from any model
+  const winResult = results.find(r => r.won);
+  if (winResult) {
+    handleQuestionsWin(winResult.secretWord);
+  }
+
+  // Check for rate limiting
+  const rateLimited = results.some(r => r.rateLimited);
+  if (rateLimited) {
+    showStatus('Rate limited - try again later', 'info');
+  } else {
+    showStatus('', '');
+  }
+
+  saveGameState();
+}
+
+/**
+ * Update a specific model's answer in an existing QA entry
+ */
+function updateModelAnswer(qaIndex, model, answer, won = false, secretWord = null) {
+  if (qaIndex >= qaHistory.length) return;
+
+  const qa = qaHistory[qaIndex];
+  const modelIdx = qa.modelAnswers.findIndex(ma => ma.model === model);
+
+  if (modelIdx !== -1) {
+    qa.modelAnswers[modelIdx].answer = answer;
+  }
+
+  // Update the primary answer to the first non-loading answer
+  const firstAnswer = qa.modelAnswers.find(ma => ma.answer !== 'loading');
+  if (firstAnswer && qa.answer === 'loading') {
+    qa.answer = firstAnswer.answer;
+  }
+
+  // Update won status if any model detected a win
+  if (won) {
+    qa.won = true;
+  }
+
+  renderQAHistory();
 }
 
 /**
@@ -2581,6 +2681,7 @@ function getAnswerClass(answer) {
     case 'maybe': return 'answer-maybe';
     case 'so close': return 'answer-close';
     case 'hint': return 'answer-hint';
+    case 'loading': return 'answer-loading';
     default: return 'answer-na';
   }
 }
