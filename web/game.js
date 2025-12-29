@@ -2085,71 +2085,98 @@ async function sendRevision() {
  * Send question text to backend for parsing and answering
  */
 /**
- * Ask a single question to all models in parallel
- * Returns the results array for win/hint detection
+ * Create placeholder entries for questions and return their indices
  */
-async function askSingleQuestion(question) {
-  // Check for duplicates - same question text within 30 seconds
-  const isDuplicate = qaHistory.some(
-    existing => existing.question.toLowerCase() === question.toLowerCase() &&
-                Date.now() - existing.timestamp < 30000
-  );
-  if (isDuplicate) return [];
-
-  // Create placeholder entry with loading state
-  const qaIndex = qaHistory.length;
-  const placeholderModelAnswers = QUESTION_MODELS.map(model => ({
-    model,
-    answer: 'loading'
-  }));
-
-  qaHistory.push({
-    question,
-    answer: 'loading',
-    modelAnswers: placeholderModelAnswers,
-    timestamp: Date.now(),
-    won: false
-  });
-  renderQAHistory();
-
-  // Fire off parallel requests to all models
-  const modelPromises = QUESTION_MODELS.map(async (model) => {
-    try {
-      const response = await fetch(`${API_BASE}/ask-model`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question,
-          model,
-          game: currentGameIndex,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to get answer');
-      }
-
-      const data = await response.json();
-      updateModelAnswer(qaIndex, model, data.answer, data.won, data.secretWord);
-      return data;
-    } catch (error) {
-      console.error(`Error asking ${model}:`, error);
-      updateModelAnswer(qaIndex, model, 'N/A', false);
-      return { model, answer: 'N/A', won: false };
+function createQuestionPlaceholders(questions) {
+  const indices = [];
+  for (const question of questions) {
+    // Check for duplicates - same question text within 30 seconds
+    const isDuplicate = qaHistory.some(
+      existing => existing.question.toLowerCase() === question.toLowerCase() &&
+                  Date.now() - existing.timestamp < 30000
+    );
+    if (isDuplicate) {
+      indices.push(-1); // Mark as duplicate
+      continue;
     }
-  });
 
-  const results = await Promise.all(modelPromises);
+    const qaIndex = qaHistory.length;
+    const placeholderModelAnswers = QUESTION_MODELS.map(model => ({
+      model,
+      answer: 'loading'
+    }));
 
-  // Check if any model detected a hint request
-  const hintResult = results.find(r => r.answer?.toLowerCase() === 'hint');
-  if (hintResult) {
-    qaHistory.splice(qaIndex, 1);
-    renderQAHistory();
-    return [{ isHint: true }];
+    qaHistory.push({
+      question,
+      answer: 'loading',
+      modelAnswers: placeholderModelAnswers,
+      timestamp: Date.now(),
+      won: false
+    });
+    indices.push(qaIndex);
+  }
+  renderQAHistory();
+  return indices;
+}
+
+/**
+ * Ask multiple questions to all models in parallel (all at once)
+ * Returns array of { question, qaIndex, results } for each question
+ */
+async function askQuestionsInParallel(questions, qaIndices) {
+  // Create all model requests for all questions at once
+  const allPromises = [];
+
+  for (let i = 0; i < questions.length; i++) {
+    const question = questions[i];
+    const qaIndex = qaIndices[i];
+
+    if (qaIndex === -1) continue; // Skip duplicates
+
+    for (const model of QUESTION_MODELS) {
+      allPromises.push(
+        (async () => {
+          try {
+            const response = await fetch(`${API_BASE}/ask-model`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                question,
+                model,
+                game: currentGameIndex,
+              }),
+            });
+
+            if (!response.ok) {
+              throw new Error('Failed to get answer');
+            }
+
+            const data = await response.json();
+            updateModelAnswer(qaIndex, model, data.answer, data.won, data.secretWord);
+            return { qaIndex, question, model, ...data };
+          } catch (error) {
+            console.error(`Error asking ${model} for "${question}":`, error);
+            updateModelAnswer(qaIndex, model, 'N/A', false);
+            return { qaIndex, question, model, answer: 'N/A', won: false };
+          }
+        })()
+      );
+    }
   }
 
-  return results;
+  // Wait for ALL requests to complete
+  const allResults = await Promise.all(allPromises);
+
+  // Group results by question index
+  const resultsByQuestion = {};
+  for (const result of allResults) {
+    if (!resultsByQuestion[result.qaIndex]) {
+      resultsByQuestion[result.qaIndex] = [];
+    }
+    resultsByQuestion[result.qaIndex].push(result);
+  }
+
+  return { allResults, resultsByQuestion };
 }
 
 async function sendQuestionToBackend(text, questionId) {
@@ -2176,36 +2203,39 @@ async function sendQuestionToBackend(text, questionId) {
 
     const questions = parseData.questions || [];
     if (questions.length === 0) {
-      // No valid questions found
       return;
     }
 
-    // Process each question
-    for (const question of questions) {
-      if (questionsWon) break;
+    // Create placeholders for all questions at once
+    const qaIndices = createQuestionPlaceholders(questions);
 
-      const results = await askSingleQuestion(question);
+    // Fire ALL requests in parallel (all questions × all models)
+    const { allResults } = await askQuestionsInParallel(questions, qaIndices);
 
-      // Check for hint
-      if (results.some(r => r.isHint)) {
-        showStatus('Getting hint...', 'info');
-        getQuestionsHint();
-        return;
+    // Check for hints - remove those entries
+    const hintResults = allResults.filter(r => r.answer?.toLowerCase() === 'hint');
+    if (hintResults.length > 0) {
+      // Remove hint entries from history (in reverse order to preserve indices)
+      const hintIndices = [...new Set(hintResults.map(r => r.qaIndex))].sort((a, b) => b - a);
+      for (const idx of hintIndices) {
+        qaHistory.splice(idx, 1);
       }
+      renderQAHistory();
+      showStatus('Getting hint...', 'info');
+      getQuestionsHint();
+      return;
+    }
 
-      // Check for win
-      const winResult = results.find(r => r.won);
-      if (winResult) {
-        handleQuestionsWin(winResult.secretWord);
-        break;
-      }
+    // Check for win
+    const winResult = allResults.find(r => r.won);
+    if (winResult) {
+      handleQuestionsWin(winResult.secretWord);
+    }
 
-      // Check for rate limiting
-      const rateLimited = results.some(r => r.rateLimited);
-      if (rateLimited) {
-        showStatus('Rate limited - try again in a minute', 'info');
-        break;
-      }
+    // Check for rate limiting
+    const rateLimited = allResults.some(r => r.rateLimited);
+    if (rateLimited) {
+      showStatus('Rate limited - try again in a minute', 'info');
     }
 
     saveGameState();
@@ -2529,35 +2559,39 @@ async function submitQuestion(questionText = null) {
 
     showStatus('Asking...', 'info');
 
-    // Process each parsed question
-    for (const question of questions) {
-      if (questionsWon) break;
+    // Create placeholders for all questions at once
+    const qaIndices = createQuestionPlaceholders(questions);
 
-      const results = await askSingleQuestion(question);
+    // Fire ALL requests in parallel (all questions × all models)
+    const { allResults } = await askQuestionsInParallel(questions, qaIndices);
 
-      // Check for hint
-      if (results.some(r => r.isHint)) {
-        showStatus('Getting hint...', 'info');
-        getQuestionsHint();
-        return;
+    // Check for hints - remove those entries
+    const hintResults = allResults.filter(r => r.answer?.toLowerCase() === 'hint');
+    if (hintResults.length > 0) {
+      const hintIndices = [...new Set(hintResults.map(r => r.qaIndex))].sort((a, b) => b - a);
+      for (const idx of hintIndices) {
+        qaHistory.splice(idx, 1);
       }
-
-      // Check for win
-      const winResult = results.find(r => r.won);
-      if (winResult) {
-        handleQuestionsWin(winResult.secretWord);
-        break;
-      }
-
-      // Check for rate limiting
-      const rateLimited = results.some(r => r.rateLimited);
-      if (rateLimited) {
-        showStatus('Rate limited - try again later', 'info');
-        break;
-      }
+      renderQAHistory();
+      showStatus('Getting hint...', 'info');
+      getQuestionsHint();
+      return;
     }
 
-    showStatus('', '');
+    // Check for win
+    const winResult = allResults.find(r => r.won);
+    if (winResult) {
+      handleQuestionsWin(winResult.secretWord);
+    }
+
+    // Check for rate limiting
+    const rateLimited = allResults.some(r => r.rateLimited);
+    if (rateLimited) {
+      showStatus('Rate limited - try again later', 'info');
+    } else {
+      showStatus('', '');
+    }
+
     saveGameState();
 
   } catch (error) {
