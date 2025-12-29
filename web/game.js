@@ -2084,17 +2084,19 @@ async function sendRevision() {
 /**
  * Send question text to backend for parsing and answering
  */
-async function sendQuestionToBackend(text, questionId) {
-  if (questionsWon) return;
-
+/**
+ * Ask a single question to all models in parallel
+ * Returns the results array for win/hint detection
+ */
+async function askSingleQuestion(question) {
   // Check for duplicates - same question text within 30 seconds
   const isDuplicate = qaHistory.some(
-    existing => existing.question.toLowerCase() === text.toLowerCase() &&
+    existing => existing.question.toLowerCase() === question.toLowerCase() &&
                 Date.now() - existing.timestamp < 30000
   );
-  if (isDuplicate) return;
+  if (isDuplicate) return [];
 
-  // Use the same parallel model approach as submitQuestion
+  // Create placeholder entry with loading state
   const qaIndex = qaHistory.length;
   const placeholderModelAnswers = QUESTION_MODELS.map(model => ({
     model,
@@ -2102,7 +2104,7 @@ async function sendQuestionToBackend(text, questionId) {
   }));
 
   qaHistory.push({
-    question: text,
+    question,
     answer: 'loading',
     modelAnswers: placeholderModelAnswers,
     timestamp: Date.now(),
@@ -2117,7 +2119,7 @@ async function sendQuestionToBackend(text, questionId) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          question: text,
+          question,
           model,
           game: currentGameIndex,
         }),
@@ -2144,24 +2146,73 @@ async function sendQuestionToBackend(text, questionId) {
   if (hintResult) {
     qaHistory.splice(qaIndex, 1);
     renderQAHistory();
-    showStatus('Getting hint...', 'info');
-    getQuestionsHint();
-    return;
+    return [{ isHint: true }];
   }
 
-  // Check for win
-  const winResult = results.find(r => r.won);
-  if (winResult) {
-    handleQuestionsWin(winResult.secretWord);
-  }
+  return results;
+}
 
-  // Check for rate limiting
-  const rateLimited = results.some(r => r.rateLimited);
-  if (rateLimited) {
-    showStatus('Rate limited - try again in a minute', 'info');
-  }
+async function sendQuestionToBackend(text, questionId) {
+  if (questionsWon) return;
 
-  saveGameState();
+  // First, parse the transcript into individual questions
+  try {
+    const parseResponse = await fetch(`${API_BASE}/parse-questions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!parseResponse.ok) {
+      throw new Error('Failed to parse questions');
+    }
+
+    const parseData = await parseResponse.json();
+
+    if (parseData.rateLimited) {
+      showStatus('Rate limited - try again in a minute', 'info');
+      return;
+    }
+
+    const questions = parseData.questions || [];
+    if (questions.length === 0) {
+      // No valid questions found
+      return;
+    }
+
+    // Process each question
+    for (const question of questions) {
+      if (questionsWon) break;
+
+      const results = await askSingleQuestion(question);
+
+      // Check for hint
+      if (results.some(r => r.isHint)) {
+        showStatus('Getting hint...', 'info');
+        getQuestionsHint();
+        return;
+      }
+
+      // Check for win
+      const winResult = results.find(r => r.won);
+      if (winResult) {
+        handleQuestionsWin(winResult.secretWord);
+        break;
+      }
+
+      // Check for rate limiting
+      const rateLimited = results.some(r => r.rateLimited);
+      if (rateLimited) {
+        showStatus('Rate limited - try again in a minute', 'info');
+        break;
+      }
+    }
+
+    saveGameState();
+
+  } catch (error) {
+    console.error('Error sending question to backend:', error);
+  }
 }
 
 /**
@@ -2433,9 +2484,9 @@ const QUESTION_MODELS = [
 ];
 
 async function submitQuestion(questionText = null) {
-  const question = (questionText || questionInput?.value || '').trim();
+  const text = (questionText || questionInput?.value || '').trim();
 
-  if (!question) return;
+  if (!text) return;
 
   if (questionInput) questionInput.value = '';
 
@@ -2449,83 +2500,70 @@ async function submitQuestion(questionText = null) {
     startTimer();
   }
 
-  showStatus('Asking...', 'info');
+  showStatus('Parsing...', 'info');
 
-  // Create a placeholder entry with loading state for all models
-  const qaIndex = qaHistory.length;
-  const placeholderModelAnswers = QUESTION_MODELS.map(model => ({
-    model,
-    answer: 'loading'
-  }));
+  try {
+    // Parse text into individual questions
+    const parseResponse = await fetch(`${API_BASE}/parse-questions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
 
-  qaHistory.push({
-    question,
-    answer: 'loading',
-    modelAnswers: placeholderModelAnswers,
-    timestamp: Date.now(),
-    won: false
-  });
-  renderQAHistory();
+    if (!parseResponse.ok) {
+      throw new Error('Failed to parse questions');
+    }
 
-  // Fire off parallel requests to all models
-  const modelPromises = QUESTION_MODELS.map(async (model) => {
-    try {
-      const response = await fetch(`${API_BASE}/ask-model`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question,
-          model,
-          game: currentGameIndex,
-        }),
-      });
+    const parseData = await parseResponse.json();
 
-      if (!response.ok) {
-        throw new Error('Failed to get answer');
+    if (parseData.rateLimited) {
+      showStatus('Rate limited - try again later', 'info');
+      return;
+    }
+
+    const questions = parseData.questions || [];
+    if (questions.length === 0) {
+      showStatus('No valid questions found', 'info');
+      return;
+    }
+
+    showStatus('Asking...', 'info');
+
+    // Process each parsed question
+    for (const question of questions) {
+      if (questionsWon) break;
+
+      const results = await askSingleQuestion(question);
+
+      // Check for hint
+      if (results.some(r => r.isHint)) {
+        showStatus('Getting hint...', 'info');
+        getQuestionsHint();
+        return;
       }
 
-      const data = await response.json();
+      // Check for win
+      const winResult = results.find(r => r.won);
+      if (winResult) {
+        handleQuestionsWin(winResult.secretWord);
+        break;
+      }
 
-      // Update the specific model's answer in the QA entry
-      updateModelAnswer(qaIndex, model, data.answer, data.won, data.secretWord);
-
-      return data;
-    } catch (error) {
-      console.error(`Error asking ${model}:`, error);
-      updateModelAnswer(qaIndex, model, 'N/A', false);
-      return { model, answer: 'N/A', won: false };
+      // Check for rate limiting
+      const rateLimited = results.some(r => r.rateLimited);
+      if (rateLimited) {
+        showStatus('Rate limited - try again later', 'info');
+        break;
+      }
     }
-  });
 
-  // Wait for all to complete (UI updates happen progressively via updateModelAnswer)
-  const results = await Promise.all(modelPromises);
-
-  // Check if any model detected a hint request
-  const hintResult = results.find(r => r.answer?.toLowerCase() === 'hint');
-  if (hintResult) {
-    // Remove the QA entry and get a hint instead
-    qaHistory.splice(qaIndex, 1);
-    renderQAHistory();
-    showStatus('Getting hint...', 'info');
-    getQuestionsHint();
-    return;
-  }
-
-  // Check for win from any model
-  const winResult = results.find(r => r.won);
-  if (winResult) {
-    handleQuestionsWin(winResult.secretWord);
-  }
-
-  // Check for rate limiting
-  const rateLimited = results.some(r => r.rateLimited);
-  if (rateLimited) {
-    showStatus('Rate limited - try again later', 'info');
-  } else {
     showStatus('', '');
-  }
+    saveGameState();
 
-  saveGameState();
+  } catch (error) {
+    console.error('Error submitting question:', error);
+    showStatus('Failed to get answer', 'error');
+  }
 }
 
 /**

@@ -193,6 +193,16 @@ interface AskModelResponse {
   error?: string;
 }
 
+interface ParseQuestionsRequest {
+  text: string;
+}
+
+interface ParseQuestionsResponse {
+  questions: string[];
+  rateLimited?: boolean;
+  error?: string;
+}
+
 interface AskResponse {
   transcribedText?: string;
   answers: Array<{
@@ -1111,6 +1121,48 @@ async function handleAskModel(request: Request, env: Env): Promise<Response> {
 }
 
 /**
+ * Handle POST /parse-questions - Parse transcript text into individual questions
+ */
+async function handleParseQuestions(request: Request, env: Env): Promise<Response> {
+  let body: ParseQuestionsRequest;
+  try {
+    body = await request.json() as ParseQuestionsRequest;
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' } as ErrorResponse, 400, request, env);
+  }
+
+  const { text } = body;
+  if (!text || !text.trim()) {
+    return jsonResponse({ questions: [] } as unknown as ScoreResponse, 200, request, env);
+  }
+
+  // Check budget for parsing
+  const canParse = await checkAndIncrementCost(env, ESTIMATED_COST_PER_PARSE_CENTS);
+  if (!canParse) {
+    const response: ParseQuestionsResponse = {
+      questions: [],
+      rateLimited: true,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+
+  try {
+    const questions = await parseQuestionsWithLLM(text, env);
+    const response: ParseQuestionsResponse = {
+      questions,
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  } catch (e) {
+    console.error('Error parsing questions:', e);
+    const response: ParseQuestionsResponse = {
+      questions: [],
+      error: 'Failed to parse questions',
+    };
+    return jsonResponse(response as unknown as ScoreResponse, 200, request, env);
+  }
+}
+
+/**
  * Handle POST /questions-hint - Get a vague hint for Questions mode based on Q&A history
  */
 async function handleQuestionsHint(request: Request, env: Env): Promise<Response> {
@@ -1658,6 +1710,11 @@ export default {
     // Get available models for question answering
     if (url.pathname === '/models' && request.method === 'GET') {
       return jsonResponse({ models: QUESTIONS_ANSWER_MODELS } as unknown as ScoreResponse, 200, request, env);
+    }
+
+    // Parse questions from transcript text
+    if (url.pathname === '/parse-questions' && request.method === 'POST') {
+      return handleParseQuestions(request, env);
     }
 
     // Realtime token endpoint (for streaming transcription)
