@@ -1284,74 +1284,30 @@ function startMicGuess() {
 
 // ============================================================
 // GPT-4o Transcribe Recording (Similarity Mode)
+// Uses OpenAI Realtime transcription streaming (single buffer)
 // ============================================================
+
+// Shared helper: encode Float32 audio to base64 PCM16
+function encodeFloat32ToPcm16Base64(inputData) {
+  const pcm16 = new Int16Array(inputData.length);
+  for (let i = 0; i < inputData.length; i++) {
+    const s = Math.max(-1, Math.min(1, inputData[i]));
+    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)));
+}
 
 // Transcribe recording state (Similarity mode)
 let simIsRecording = false;
-let simMediaRecorderA = null;
-let simMediaRecorderB = null;
-let simAudioChunksA = [];
-let simAudioChunksB = [];
-let simRecordingIntervalA = null;
-let simRecordingIntervalB = null;
-let simAudioStream = null;
-const SIM_RECORDING_INTERVAL_MS = 5000; // 5 seconds per buffer
-const SIM_BUFFER_OFFSET_MS = 2500; // 2.5 second offset between buffers
+let simRealtimeWs = null;       // WebSocket to OpenAI
+let simAudioWorklet = null;     // { source, processor }
+let simStreamingTranscript = ''; // Running transcript (for debugging)
 
 // DOM elements for transcribe recording
 const transcribeRecordBtn = document.getElementById('transcribe-record-btn');
 const transcribeStatus = document.getElementById('transcribe-status');
 const transcribeIndicator = document.getElementById('transcribe-indicator');
 const transcribeStatusText = document.getElementById('transcribe-status-text');
-
-/**
- * Get preferred MIME type for audio recording (shared with Questions mode)
- */
-function getSimPreferredMimeType() {
-  if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm';
-  if (MediaRecorder.isTypeSupported('audio/mp4')) return 'audio/mp4';
-  return 'audio/webm';
-}
-
-/**
- * Create a MediaRecorder for Similarity mode transcription
- */
-function createSimRecorder(stream, chunks, label) {
-  const mimeType = getSimPreferredMimeType();
-  const recorder = new MediaRecorder(stream, { mimeType });
-
-  recorder.ondataavailable = (event) => {
-    if (event.data.size > 0) {
-      chunks.push(event.data);
-    }
-  };
-
-  recorder.onstop = async () => {
-    if (chunks.length > 0 && !gameWon) {
-      const chunksCopy = [...chunks];
-      chunks.length = 0;
-      await processSimAudioBuffer(chunksCopy, mimeType, label);
-    }
-  };
-
-  return recorder;
-}
-
-/**
- * Initialize audio stream for Similarity mode transcription
- */
-async function initSimAudioSystem() {
-  try {
-    simAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    simMediaRecorderA = createSimRecorder(simAudioStream, simAudioChunksA, 'A');
-    simMediaRecorderB = createSimRecorder(simAudioStream, simAudioChunksB, 'B');
-    return true;
-  } catch (error) {
-    console.error('Failed to initialize Similarity audio system:', error);
-    showStatus('Microphone access denied', 'error');
-    return false;
-  }
-}
 
 /**
  * Toggle Similarity mode transcribe recording
@@ -1365,17 +1321,12 @@ async function toggleSimRecording() {
 }
 
 /**
- * Start Similarity mode transcribe recording with overlapping buffers
+ * Start Similarity mode transcribe recording (single streaming buffer)
  */
 async function startSimRecording() {
   if (gameWon) {
     showStatus('Game over! Start a new game.', 'info');
     return;
-  }
-
-  if (!simAudioStream) {
-    const success = await initSimAudioSystem();
-    if (!success) return;
   }
 
   // Stop Web Speech API mic if active
@@ -1387,8 +1338,7 @@ async function startSimRecording() {
   }
 
   simIsRecording = true;
-  simAudioChunksA = [];
-  simAudioChunksB = [];
+  simStreamingTranscript = '';
 
   // Update UI
   if (transcribeRecordBtn) {
@@ -1397,72 +1347,57 @@ async function startSimRecording() {
   }
   if (transcribeIndicator) transcribeIndicator.classList.add('active');
   if (transcribeStatus) transcribeStatus.classList.remove('hidden');
-  if (transcribeStatusText) transcribeStatusText.textContent = 'Recording... (dual buffers)';
+  if (transcribeStatusText) transcribeStatusText.textContent = 'Connecting...';
 
   // Start timer on first recording
   if (!timerStarted) {
     startTimer();
   }
 
-  // Start Buffer A immediately
-  try {
-    simMediaRecorderA.start();
-    console.log('Sim Buffer A started');
-  } catch (e) {
-    console.error('Failed to start Sim Buffer A:', e);
+  // Initialize shared audio system if needed
+  if (!audioStream || !audioContext) {
+    const success = await initAudioSystem();
+    if (!success) {
+      simIsRecording = false;
+      if (transcribeRecordBtn) {
+        transcribeRecordBtn.classList.remove('recording');
+        transcribeRecordBtn.innerHTML = '<span class="record-icon">&#x23FA;</span> GPT-4o Transcribe';
+      }
+      if (transcribeIndicator) transcribeIndicator.classList.remove('active');
+      if (transcribeStatus) transcribeStatus.classList.add('hidden');
+      return;
+    }
+  }
+
+  // Resume audio context if suspended
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+
+  // Connect to OpenAI
+  const connected = await connectSimRealtimeWebSocket();
+  if (!connected) {
     simIsRecording = false;
+    if (transcribeStatusText) transcribeStatusText.textContent = 'Connection failed';
+    if (transcribeRecordBtn) {
+      transcribeRecordBtn.classList.remove('recording');
+      transcribeRecordBtn.innerHTML = '<span class="record-icon">&#x23FA;</span> GPT-4o Transcribe';
+    }
+    if (transcribeIndicator) transcribeIndicator.classList.remove('active');
+    if (transcribeStatus) transcribeStatus.classList.add('hidden');
     return;
   }
 
-  // Start Buffer B after offset
-  setTimeout(() => {
-    if (simIsRecording && !gameWon) {
-      try {
-        simMediaRecorderB.start();
-        console.log('Sim Buffer B started (2.5s offset)');
-      } catch (e) {
-        console.error('Failed to start Sim Buffer B:', e);
+  // Wait for WebSocket to be ready, then start streaming
+  const waitForOpen = setInterval(() => {
+    if (simRealtimeWs && simRealtimeWs.readyState === WebSocket.OPEN) {
+      clearInterval(waitForOpen);
+      startSimAudioStreaming();
+      if (transcribeStatusText) {
+        transcribeStatusText.textContent = 'Streaming... speak your guesses';
       }
     }
-  }, SIM_BUFFER_OFFSET_MS);
-
-  // Set up interval for Buffer A
-  simRecordingIntervalA = setInterval(() => {
-    if (simIsRecording && simMediaRecorderA && simMediaRecorderA.state === 'recording') {
-      simMediaRecorderA.stop();
-      setTimeout(() => {
-        if (simIsRecording && !gameWon) {
-          try {
-            simMediaRecorderA.start();
-            console.log('Sim Buffer A restarted');
-          } catch (e) {
-            console.error('Failed to restart Sim Buffer A:', e);
-          }
-        }
-      }, 100);
-    }
-  }, SIM_RECORDING_INTERVAL_MS);
-
-  // Set up interval for Buffer B (after initial offset)
-  setTimeout(() => {
-    if (simIsRecording && !gameWon) {
-      simRecordingIntervalB = setInterval(() => {
-        if (simIsRecording && simMediaRecorderB && simMediaRecorderB.state === 'recording') {
-          simMediaRecorderB.stop();
-          setTimeout(() => {
-            if (simIsRecording && !gameWon) {
-              try {
-                simMediaRecorderB.start();
-                console.log('Sim Buffer B restarted');
-              } catch (e) {
-                console.error('Failed to restart Sim Buffer B:', e);
-              }
-            }
-          }, 100);
-        }
-      }, SIM_RECORDING_INTERVAL_MS);
-    }
-  }, SIM_BUFFER_OFFSET_MS);
+  }, 100);
 }
 
 /**
@@ -1472,23 +1407,23 @@ function stopSimRecording() {
   if (!simIsRecording) return;
 
   simIsRecording = false;
+  simStreamingTranscript = '';
 
-  // Clear intervals
-  if (simRecordingIntervalA) {
-    clearInterval(simRecordingIntervalA);
-    simRecordingIntervalA = null;
-  }
-  if (simRecordingIntervalB) {
-    clearInterval(simRecordingIntervalB);
-    simRecordingIntervalB = null;
+  // Stop audio processing
+  if (simAudioWorklet) {
+    try {
+      simAudioWorklet.source.disconnect();
+      simAudioWorklet.processor.disconnect();
+    } catch (e) {
+      console.error('Error disconnecting Similarity audio worklet:', e);
+    }
+    simAudioWorklet = null;
   }
 
-  // Stop both recorders
-  if (simMediaRecorderA && simMediaRecorderA.state === 'recording') {
-    try { simMediaRecorderA.stop(); } catch (e) { console.error('Error stopping Sim A:', e); }
-  }
-  if (simMediaRecorderB && simMediaRecorderB.state === 'recording') {
-    try { simMediaRecorderB.stop(); } catch (e) { console.error('Error stopping Sim B:', e); }
+  // Close WebSocket
+  if (simRealtimeWs) {
+    simRealtimeWs.close();
+    simRealtimeWs = null;
   }
 
   // Update UI
@@ -1501,65 +1436,173 @@ function stopSimRecording() {
 }
 
 /**
- * Process Similarity mode audio buffer and submit guesses
+ * Connect to OpenAI Realtime Transcription API for Similarity mode
  */
-async function processSimAudioBuffer(chunks, mimeType, label) {
-  if (chunks.length === 0 || gameWon) return;
+async function connectSimRealtimeWebSocket() {
+  try {
+    const token = await getRealtimeToken();
 
-  const audioBlob = new Blob(chunks, { type: mimeType });
+    simRealtimeWs = new WebSocket(
+      'wss://api.openai.com/v1/realtime?intent=transcription',
+      ['realtime', `openai-insecure-api-key.${token}`, 'openai-beta.realtime-v1']
+    );
 
-  const reader = new FileReader();
-  reader.readAsDataURL(audioBlob);
+    simRealtimeWs.onopen = () => {
+      console.log('Connected to OpenAI Realtime Transcription API (Similarity)');
 
-  reader.onloadend = async () => {
-    const base64Data = reader.result;
-    const base64Audio = base64Data.split(',')[1];
-
-    console.log(`Processing Sim Buffer ${label}...`);
-    if (simIsRecording && transcribeStatusText) {
-      transcribeStatusText.textContent = 'Processing speech...';
-    }
-
-    try {
-      const response = await fetch(`${API_BASE}/transcribe-guess`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audioBase64: base64Audio,
-          mimeType: mimeType,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to transcribe audio');
-      }
-
-      const data = await response.json();
-
-      // Submit each extracted word as a guess
-      if (data.words && data.words.length > 0) {
-        console.log('Transcribed words:', data.words);
-        for (const word of data.words) {
-          // Check if not already guessed
-          if (!guesses.some(g => g.word === word)) {
-            submitGuess(word);
+      // Configure transcription session
+      simRealtimeWs.send(JSON.stringify({
+        type: 'transcription_session.update',
+        session: {
+          input_audio_format: 'pcm16',
+          input_audio_transcription: {
+            model: 'gpt-4o-mini-transcribe',
+          },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 800
           }
         }
-      }
+      }));
+    };
 
-      if (data.rateLimited) {
-        showStatus('Rate limited - try again later', 'info');
-      }
+    simRealtimeWs.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      handleSimRealtimeMessage(data);
+    };
 
-    } catch (error) {
-      console.error(`Error processing Sim Buffer ${label}:`, error);
-      showStatus('Failed to process speech', 'error');
-    } finally {
-      if (simIsRecording && transcribeStatusText) {
-        transcribeStatusText.textContent = 'Recording... (dual buffers)';
+    simRealtimeWs.onerror = (error) => {
+      console.error('Similarity WebSocket error:', error);
+      showStatus('Connection error', 'error');
+      if (transcribeStatusText && simIsRecording) {
+        transcribeStatusText.textContent = 'Connection error';
+      }
+    };
+
+    simRealtimeWs.onclose = () => {
+      console.log('Similarity WebSocket closed');
+      if (simIsRecording && !gameWon) {
+        setTimeout(() => {
+          if (simIsRecording && !gameWon) {
+            connectSimRealtimeWebSocket();
+          }
+        }, 1000);
+      }
+    };
+
+    return true;
+  } catch (error) {
+    console.error('Failed to connect Similarity WebSocket:', error);
+    return false;
+  }
+}
+
+/**
+ * Handle messages from OpenAI Realtime Transcription API (Similarity)
+ */
+function handleSimRealtimeMessage(data) {
+  switch (data.type) {
+    case 'transcription_session.created':
+    case 'transcription_session.updated':
+      console.log('Similarity transcription session configured:', data.type);
+      if (transcribeStatusText && simIsRecording) {
+        transcribeStatusText.textContent = 'Streaming... speak your guesses';
+      }
+      break;
+
+    case 'conversation.item.input_audio_transcription.delta':
+      if (data.delta) {
+        simStreamingTranscript += data.delta;
+      }
+      break;
+
+    case 'conversation.item.input_audio_transcription.completed':
+      if (data.transcript) {
+        console.log('Similarity completed transcript:', data.transcript);
+        processSimCompletedTranscript(data.transcript);
+      }
+      break;
+
+    case 'input_audio_buffer.speech_started':
+      if (transcribeStatusText && simIsRecording) {
+        transcribeStatusText.textContent = 'Listening...';
+      }
+      break;
+
+    case 'input_audio_buffer.speech_stopped':
+      if (transcribeStatusText && simIsRecording) {
+        transcribeStatusText.textContent = 'Processing...';
+      }
+      break;
+
+    case 'error':
+      console.error('Similarity realtime error:', data);
+      showStatus('Transcription error', 'error');
+      if (transcribeStatusText && simIsRecording) {
+        transcribeStatusText.textContent = 'Transcription error';
+      }
+      break;
+  }
+}
+
+/**
+ * Process a completed transcript segment into similarity guesses
+ */
+function processSimCompletedTranscript(transcript) {
+  if (!transcript || !transcript.trim() || gameWon) return;
+
+  const rawWords = transcript.toLowerCase().split(/\s+/);
+  const words = [];
+
+  for (const word of rawWords) {
+    const cleaned = word.replace(/[^a-z]/g, '');
+    if (cleaned.length >= 3 && /^[a-z]+$/.test(cleaned) && !STOP_WORDS.has(cleaned)) {
+      words.push(cleaned);
+    }
+  }
+
+  if (words.length > 0) {
+    console.log('Similarity transcript words:', words);
+    for (const word of words) {
+      if (!guesses.some(g => g.word === word) && !guessQueue.includes(word)) {
+        submitGuess(word);
       }
     }
+  }
+
+  simStreamingTranscript = '';
+  if (transcribeStatusText && simIsRecording) {
+    transcribeStatusText.textContent = 'Streaming... speak your guesses';
+  }
+}
+
+/**
+ * Start streaming audio to OpenAI for Similarity mode
+ */
+async function startSimAudioStreaming() {
+  if (!audioContext || !audioStream || !simRealtimeWs) return;
+
+  const source = audioContext.createMediaStreamSource(audioStream);
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+  processor.onaudioprocess = (e) => {
+    if (!simIsRecording || !simRealtimeWs || simRealtimeWs.readyState !== WebSocket.OPEN) return;
+
+    const inputData = e.inputBuffer.getChannelData(0);
+    const base64 = encodeFloat32ToPcm16Base64(inputData);
+
+    simRealtimeWs.send(JSON.stringify({
+      type: 'input_audio_buffer.append',
+      audio: base64
+    }));
   };
+
+  source.connect(processor);
+  processor.connect(audioContext.destination);
+
+  simAudioWorklet = { source, processor };
 }
 
 // ============================================================
@@ -2199,16 +2242,7 @@ async function startAudioStreaming() {
     if (!isRecording || !realtimeWs || realtimeWs.readyState !== WebSocket.OPEN) return;
 
     const inputData = e.inputBuffer.getChannelData(0);
-
-    // Convert Float32 to Int16 PCM
-    const pcm16 = new Int16Array(inputData.length);
-    for (let i = 0; i < inputData.length; i++) {
-      const s = Math.max(-1, Math.min(1, inputData[i]));
-      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    }
-
-    // Convert to base64
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16.buffer)));
+    const base64 = encodeFloat32ToPcm16Base64(inputData);
 
     // Send to OpenAI
     realtimeWs.send(JSON.stringify({
