@@ -43,7 +43,7 @@ const HINT_MODEL = 'anthropic/claude-sonnet-4.5';
 // LLMs for answering questions in 20 Questions mode (all called in parallel)
 const QUESTIONS_ANSWER_MODELS = [
   'openai/gpt-5.2',
-  'google/gemini-3-pro-preview',
+  'google/gemini-3-flash-preview',
   'anthropic/claude-sonnet-4.5'
 ];
 
