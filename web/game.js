@@ -2112,7 +2112,7 @@ async function sendQuestionToBackend(text, questionId) {
                     Date.now() - existing.timestamp < 30000
       );
       if (!isDuplicate) {
-        addQAToHistory(qa.question, qa.answer, data.won);
+        addQAToHistory(qa.question, qa.answer, data.won, qa.modelAnswers || []);
       }
     }
 
@@ -2436,7 +2436,7 @@ async function submitQuestion(questionText = null) {
         return;
       }
 
-      addQAToHistory(qa.question, qa.answer, data.won);
+      addQAToHistory(qa.question, qa.answer, data.won, qa.modelAnswers || []);
       showStatus('', '');
     }
 
@@ -2458,10 +2458,11 @@ async function submitQuestion(questionText = null) {
 /**
  * Add a Q&A pair to history
  */
-function addQAToHistory(question, answer, won = false) {
+function addQAToHistory(question, answer, won = false, modelAnswers = []) {
   qaHistory.push({
     question,
     answer,
+    modelAnswers,
     timestamp: Date.now(),
     won
   });
@@ -2547,12 +2548,22 @@ function renderQAHistory() {
     const wonClass = qa.won ? ' won' : '';
     const questionNum = item.originalIndex + 1;
 
+    // Render multi-model answers if available, otherwise fall back to single answer
+    const modelAnswersHtml = qa.modelAnswers?.length > 0
+      ? qa.modelAnswers.map(ma => `
+          <div class="model-answer ${getAnswerClass(ma.answer)}">
+            <span class="model-name">${getModelShortName(ma.model)}</span>
+            <span class="model-result">${ma.answer.toUpperCase()}</span>
+          </div>
+        `).join('')
+      : `<div class="qa-answer ${answerClass}">${qa.answer.toUpperCase()}</div>`;
+
     return `
       <div class="qa-item${wonClass}">
         <div class="qa-number">#${questionNum}</div>
         <div class="qa-content">
           <div class="qa-question">${escapeHtml(qa.question)}</div>
-          <div class="qa-answer ${answerClass}">${qa.answer.toUpperCase()}</div>
+          <div class="qa-answers-row">${modelAnswersHtml}</div>
         </div>
       </div>
     `;
@@ -2572,6 +2583,16 @@ function getAnswerClass(answer) {
     case 'hint': return 'answer-hint';
     default: return 'answer-na';
   }
+}
+
+/**
+ * Get short display name for model
+ */
+function getModelShortName(model) {
+  if (model.includes('gpt')) return 'GPT';
+  if (model.includes('gemini')) return 'Gemini';
+  if (model.includes('claude')) return 'Claude';
+  return model.split('/')[1] || model;
 }
 
 /**

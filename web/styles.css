@@ -975,6 +975,34 @@ footer a:hover {
   background: rgba(68, 204, 255, 0.15);
 }
 
+/* Multi-model answer display */
+.qa-answers-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.model-answer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 4px;
+  min-width: 65px;
+}
+
+.model-name {
+  font-size: 0.65rem;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.model-result {
+  font-weight: bold;
+  font-size: 0.85rem;
+}
+
 .no-questions {
   text-align: center;
   color: var(--text-muted);

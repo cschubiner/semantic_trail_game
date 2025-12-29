@@ -40,8 +40,12 @@ const RERANK_MODEL = 'google/gemini-3-flash-preview';
 // LLM for hints
 const HINT_MODEL = 'anthropic/claude-sonnet-4.5';
 
-// LLM for answering questions in 20 Questions mode
-const QUESTIONS_ANSWER_MODEL = 'openai/gpt-4.1';
+// LLMs for answering questions in 20 Questions mode (all called in parallel)
+const QUESTIONS_ANSWER_MODELS = [
+  'openai/gpt-5.2',
+  'google/gemini-3-pro-preview',
+  'anthropic/claude-sonnet-4.5'
+];
 
 // LLM for parsing questions from speech (fast and cheap)
 const QUESTIONS_PARSE_MODEL = 'google/gemini-2.5-flash-lite';
@@ -177,7 +181,11 @@ interface AskResponse {
   transcribedText?: string;
   answers: Array<{
     question: string;
-    answer: QuestionAnswer;
+    answer: QuestionAnswer;  // First model's answer (backwards compat)
+    modelAnswers: Array<{
+      model: string;
+      answer: QuestionAnswer;
+    }>;
   }>;
   rateLimited?: boolean;
   won?: boolean;
@@ -712,8 +720,9 @@ Output: {"questions": ["Is it a person?", "Is it an object?", "Is it something y
 async function answerQuestionWithLLM(
   question: string,
   secret: string,
-  env: Env
-): Promise<{ answer: QuestionAnswer; won: boolean }> {
+  env: Env,
+  model: string = QUESTIONS_ANSWER_MODELS[0]
+): Promise<{ answer: QuestionAnswer; won: boolean; model: string }> {
   // Check if question contains the secret word - instant win!
   const questionLower = question.toLowerCase();
   const secretLower = secret.toLowerCase();
@@ -723,7 +732,7 @@ async function answerQuestionWithLLM(
   // e.g., "oracle" matches "oracles", "guide" matches "guiding"
   const wordWithSuffixRegex = new RegExp(`\\b${secretLower}(s|es|ed|ing|er|ers|ly)?\\b`, 'i');
   if (wordWithSuffixRegex.test(questionLower)) {
-    return { answer: 'yes', won: true };
+    return { answer: 'yes', won: true, model };
   }
 
   const prompt = `20 Questions game. Secret word: "${secret}"
@@ -784,7 +793,7 @@ Answer: {"answer": "yes|no|maybe|so close|hint"}`;
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: QUESTIONS_ANSWER_MODEL,
+      model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.1,
       max_tokens: 50,
@@ -796,8 +805,8 @@ Answer: {"answer": "yes|no|maybe|so close|hint"}`;
   });
 
   if (!response.ok) {
-    console.error('Answer question LLM error:', await response.text());
-    return { answer: 'N/A', won: false };
+    console.error(`Answer question LLM error (${model}):`, await response.text());
+    return { answer: 'N/A', won: false, model };
   }
 
   const data = await response.json() as { choices: Array<{ message: { content: string } }> };
@@ -821,11 +830,46 @@ Answer: {"answer": "yes|no|maybe|so close|hint"}`;
     else if (answerRaw === 'hint') answer = 'hint';
     else answer = 'N/A';
 
-    return { answer, won: false };
+    return { answer, won: false, model };
   } catch {
-    console.error('Failed to parse answer JSON:', content);
-    return { answer: 'N/A', won: false };
+    console.error(`Failed to parse answer JSON (${model}):`, content);
+    return { answer: 'N/A', won: false, model };
   }
+}
+
+/**
+ * Answer a question using all configured models in parallel
+ * Returns answers from all models, with win detection done once upfront
+ */
+async function answerQuestionWithAllModels(
+  question: string,
+  secret: string,
+  env: Env
+): Promise<{ modelAnswers: Array<{ model: string; answer: QuestionAnswer }>; won: boolean }> {
+  // Check for win condition upfront (same logic as in answerQuestionWithLLM)
+  const questionLower = question.toLowerCase();
+  const secretLower = secret.toLowerCase();
+  const wordWithSuffixRegex = new RegExp(`\\b${secretLower}(s|es|ed|ing|er|ers|ly)?\\b`, 'i');
+
+  if (wordWithSuffixRegex.test(questionLower)) {
+    // Win! Return 'yes' for all models
+    return {
+      modelAnswers: QUESTIONS_ANSWER_MODELS.map(model => ({ model, answer: 'yes' as QuestionAnswer })),
+      won: true
+    };
+  }
+
+  // Call all models in parallel
+  const results = await Promise.allSettled(
+    QUESTIONS_ANSWER_MODELS.map(model => answerQuestionWithLLM(question, secret, env, model))
+  );
+
+  const modelAnswers = results.map((result, i) => ({
+    model: QUESTIONS_ANSWER_MODELS[i],
+    answer: (result.status === 'fulfilled' ? result.value.answer : 'N/A') as QuestionAnswer
+  }));
+
+  return { modelAnswers, won: false };
 }
 
 /**
@@ -948,21 +992,24 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
     }
   }
 
-  // Answer each question
-  const answers: Array<{ question: string; answer: QuestionAnswer }> = [];
+  // Answer each question with all models in parallel
+  const answers: Array<{ question: string; answer: QuestionAnswer; modelAnswers: Array<{ model: string; answer: QuestionAnswer }> }> = [];
 
   for (const question of allQuestions) {
     if (won) break;
 
-    const canAnswer = await checkAndIncrementCost(env, ESTIMATED_COST_PER_ANSWER_CENTS);
+    // Cost is now 3x since we call 3 models
+    const canAnswer = await checkAndIncrementCost(env, ESTIMATED_COST_PER_ANSWER_CENTS * QUESTIONS_ANSWER_MODELS.length);
     if (!canAnswer) {
       rateLimited = true;
       break;
     }
 
     try {
-      const result = await answerQuestionWithLLM(question, secret, env);
-      answers.push({ question, answer: result.answer });
+      const result = await answerQuestionWithAllModels(question, secret, env);
+      // First model's answer for backwards compatibility
+      const firstAnswer = result.modelAnswers[0]?.answer || 'N/A';
+      answers.push({ question, answer: firstAnswer, modelAnswers: result.modelAnswers });
 
       if (result.won) {
         won = true;
@@ -970,7 +1017,8 @@ async function handleAsk(request: Request, env: Env): Promise<Response> {
       }
     } catch (e) {
       console.error('Answer question error:', e);
-      answers.push({ question, answer: 'N/A' });
+      const fallbackModelAnswers = QUESTIONS_ANSWER_MODELS.map(model => ({ model, answer: 'N/A' as QuestionAnswer }));
+      answers.push({ question, answer: 'N/A', modelAnswers: fallbackModelAnswers });
     }
   }
 
