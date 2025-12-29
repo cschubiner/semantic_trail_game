@@ -35,7 +35,7 @@ const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/embeddings';
 const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 // LLM for re-ranking and question parsing
-const RERANK_MODEL = 'google/gemini-2.5-flash';
+const RERANK_MODEL = 'google/gemini-3-flash-preview';
 
 // LLM for hints
 const HINT_MODEL = 'anthropic/claude-sonnet-4.5';
