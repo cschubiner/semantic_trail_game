@@ -32,6 +32,9 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Test scoring availability
+        run: npm test
+
   python-syntax:
     name: Python syntax check
     runs-on: ubuntu-latest

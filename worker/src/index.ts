@@ -34,6 +34,18 @@ const STOP_WORDS = new Set([
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/embeddings';
 const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
+class EmbeddingServiceError extends Error {
+  constructor(status: number) {
+    const message = status === 401 || status === 403
+      ? 'Scoring is unavailable because the game\'s AI credentials need updating. Please try again later.'
+      : status === 402
+        ? 'Scoring is unavailable because the game\'s AI account needs more credits. Please try again later.'
+        : 'The AI scoring service is temporarily unavailable. Please try again later.';
+    super(message);
+    this.name = 'EmbeddingServiceError';
+  }
+}
+
 // LLM for re-ranking and question parsing
 const RERANK_MODEL = 'google/gemini-3-flash-preview';
 
@@ -431,8 +443,8 @@ async function getEmbedding(
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`OpenRouter API error (${model}): ${response.status} - ${text}`);
+    console.error('OpenRouter embedding request failed:', model, response.status);
+    throw new EmbeddingServiceError(response.status);
   }
 
   const data = await response.json() as { data: Array<{ embedding: number[] }> };
@@ -1370,7 +1382,7 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
     return jsonResponse(response, 200, request, env);
   }
 
-  // Get similarity using GTE-base
+  // Get similarity using Gemini
   try {
     const similarity = await getSimilarity(guess, secret, env);
     const score = similarityToScore(similarity);
@@ -1386,8 +1398,10 @@ async function handleScore(request: Request, env: Env): Promise<Response> {
   } catch (error) {
     console.error('Error getting similarity:', error);
     return jsonResponse(
-      { error: `Failed to compute similarity: ${error instanceof Error ? error.message : 'Unknown error'}` },
-      500,
+      { error: error instanceof EmbeddingServiceError
+        ? error.message
+        : 'Unable to score your guess right now. Please try again later.' },
+      error instanceof EmbeddingServiceError ? 503 : 500,
       request,
       env
     );
